@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Bot,
@@ -142,7 +142,10 @@ function App() {
           </span>
           <div>
             <h1>DeeperSeek</h1>
-            <p>真人兼容型假智能</p>
+            <p>
+              真人兼容型假智能
+              <span className="human-badge">人工含量 100%</span>
+            </p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -340,7 +343,7 @@ function AuthPanel({
       </div>
 
       <label>
-        账号名
+        <span>账号名</span>
         <input
           autoComplete="username"
           data-testid="auth-account"
@@ -350,7 +353,7 @@ function AuthPanel({
       </label>
       {mode === "register" && (
         <label>
-          昵称
+          <span>昵称</span>
           <input
             autoComplete="nickname"
             data-testid="auth-nickname"
@@ -360,7 +363,7 @@ function AuthPanel({
         </label>
       )}
       <label>
-        密码
+        <span>密码</span>
         <input
           autoComplete={mode === "login" ? "current-password" : "new-password"}
           data-testid="auth-password"
@@ -371,7 +374,7 @@ function AuthPanel({
       </label>
       {mode === "register" && (
         <label>
-          再输一遍，别赖模型幻觉
+          <span>再输一遍，别赖模型幻觉</span>
           <input
             autoComplete="new-password"
             data-testid="auth-repeat-password"
@@ -516,50 +519,64 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
     <section className="request-workspace">
       <div className={messages.length === 0 ? "chat-pane request-chat-pane empty-chat" : "chat-pane request-chat-pane"}>
         <div className="conversation">
-          {messages.map((message) => (
-            <article
-              className={message.role === "user" ? "bubble user-bubble" : "bubble ai-bubble"}
-              data-testid={message.role === "user" ? "request-user-bubble" : "request-assistant-bubble"}
-              key={message.id}
-            >
-              {message.role === "assistant" ? (
-                <>
-                  {message.content && <span data-testid="request-answer">{message.content}</span>}
-                  {(message.status === "waiting" || message.status === "streaming") && <WaitingLine status={message.status} />}
-                  {message.status === "error" && <span className="muted">翻车了，假智能暂停营业。</span>}
-                </>
-              ) : (
-                message.content
-              )}
-            </article>
-          ))}
+          {messages.length === 0 && (
+            <div className="empty-hero">
+              <p className="empty-kicker">DEEPERSEEK · 人工含量 100%</p>
+              <h2>问吧，后台真的有人。</h2>
+              <p className="muted">每个回答都由一位被迫营业的人类现场打字，延迟即诚意。</p>
+              <div className="sample-chips">
+                {sampleQuestions.map((sample) => (
+                  <button className="sample-chip" key={sample} onClick={() => setPrompt(sample)} type="button">
+                    {sample}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {messages.map((message) =>
+            message.role === "user" ? (
+              <article className="bubble user-bubble" data-testid="request-user-bubble" key={message.id}>
+                {message.content}
+              </article>
+            ) : (
+              <article className="bubble ai-bubble" data-testid="request-assistant-bubble" key={message.id}>
+                <span className="bubble-tag">
+                  <Bot size={13} />
+                  {assistantTagCopy(message.status)}
+                </span>
+                {message.content && <span data-testid="request-answer">{message.content}</span>}
+                {(message.status === "waiting" || message.status === "streaming") && <WaitingLine />}
+                {message.status === "error" && <span className="muted">翻车了，假智能暂停营业。</span>}
+                {latestReactable?.id === message.id && (
+                  <div className="reaction-row">
+                    <button
+                      data-testid="reaction-like"
+                      aria-label="点赞这个假 AI"
+                      className={latestReactable.reaction === "like" ? "icon-button selected" : "icon-button"}
+                      onClick={() => latestReactable.requestID && react(latestReactable.id, latestReactable.requestID, "like")}
+                      disabled={!latestReactable.requestID}
+                      title="点赞，奖励这位打字员"
+                    >
+                      <ThumbsUp size={18} />
+                    </button>
+                    <button
+                      data-testid="reaction-dislike"
+                      aria-label="点踩这个假 AI"
+                      className={latestReactable.reaction === "dislike" ? "icon-button selected" : "icon-button"}
+                      onClick={() =>
+                        latestReactable.requestID && react(latestReactable.id, latestReactable.requestID, "dislike")
+                      }
+                      disabled={!latestReactable.requestID}
+                      title="点踩，让装 AI 的人少拿点"
+                    >
+                      <ThumbsDown size={18} />
+                    </button>
+                  </div>
+                )}
+              </article>
+            )
+          )}
         </div>
-        {latestReactable && (
-          <div className="reaction-row">
-            <button
-              data-testid="reaction-like"
-              aria-label="点赞这个假 AI"
-              className={latestReactable.reaction === "like" ? "icon-button selected" : "icon-button"}
-              onClick={() => latestReactable.requestID && react(latestReactable.id, latestReactable.requestID, "like")}
-              disabled={!latestReactable.requestID}
-              title="点赞，奖励这位打字员"
-            >
-              <ThumbsUp size={18} />
-            </button>
-            <button
-              data-testid="reaction-dislike"
-              aria-label="点踩这个假 AI"
-              className={latestReactable.reaction === "dislike" ? "icon-button selected" : "icon-button"}
-              onClick={() =>
-                latestReactable.requestID && react(latestReactable.id, latestReactable.requestID, "dislike")
-              }
-              disabled={!latestReactable.requestID}
-              title="点踩，让装 AI 的人少拿点"
-            >
-              <ThumbsDown size={18} />
-            </button>
-          </div>
-        )}
         <div className="composer chat-composer">
           <textarea
             data-testid="request-prompt"
@@ -599,9 +616,16 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
   );
 }
 
-function WaitingLine({ status }: { status: string }) {
-  if (status === "idle") return <span className="muted">还没开始装。</span>;
-  if (status === "error") return <span className="muted">翻车了。</span>;
+const sampleQuestions = ["为什么天空是蓝色的？", "帮我编一个体面的离职理由", "用一句话证明你不是人类"];
+
+function assistantTagCopy(status?: string) {
+  if (status === "waiting") return "正在派单给人类";
+  if (status === "streaming") return "人类打字中";
+  if (status === "error") return "生产事故";
+  return "人工生成 · 已交付";
+}
+
+function WaitingLine() {
   return (
     <span className="thinking-line" data-testid="thinking-mark">
       <span className="typing-mark" aria-hidden="true">
@@ -609,7 +633,6 @@ function WaitingLine({ status }: { status: string }) {
         <span />
         <span />
       </span>
-      <span className="thinking-copy">{status === "waiting" ? "正在抓一个人类来假装 AI" : "还没收工，继续假装思考"}</span>
     </span>
   );
 }
@@ -617,13 +640,66 @@ function WaitingLine({ status }: { status: string }) {
 function AnswerPanel({ auth }: { auth: AuthResult }) {
   const [connected, setConnected] = useState(false);
   const [assignment, setAssignment] = useState<AssignedRequest | null>(null);
-  const [committed, setCommitted] = useState("");
+  const [committedFrags, setCommittedFrags] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  const [shiftCount, setShiftCount] = useState(0);
+  const committed = committedFrags.join("");
   const [pendingCommit, setPendingCommit] = useState("");
+  const [rejectedCommit, setRejectedCommit] = useState("");
   const [clientSeq, setClientSeq] = useState(1);
   const [error, setError] = useState("");
   const [activity, setActivity] = useState("离线摸鱼");
   const wsRef = useRef<WebSocket | null>(null);
+  const editorRef = useRef<AnswerEditorHandle | null>(null);
+  const pendingCommitRef = useRef("");
+  const clientSeqRef = useRef(1);
+
+  const trackPendingCommit = (value: string) => {
+    pendingCommitRef.current = value;
+    setPendingCommit(value);
+  };
+
+  const resetAnswerState = () => {
+    setCommittedFrags([]);
+    setDraft("");
+    trackPendingCommit("");
+    setRejectedCommit("");
+    editorRef.current?.reset();
+  };
+
+  const backToWaiting = () => {
+    setAssignment(null);
+    resetAnswerState();
+    setActivity("在线等锅");
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "available" }));
+    }
+  };
+
+  const applyAckedCommit = (text: string, remaining: string) => {
+    if (text) {
+      setCommittedFrags((value) => [...value, text]);
+    }
+    setDraft(remaining);
+    trackPendingCommit("");
+    setRejectedCommit("");
+    clientSeqRef.current += 1;
+    setClientSeq(clientSeqRef.current);
+    setActivity("正在伪装智能");
+  };
+
+  const handleServerError = (message: string) => {
+    setError(translateError(message));
+    if (assignmentGoneErrors.has(message.trim())) {
+      backToWaiting();
+      return;
+    }
+    if (pendingCommitRef.current) {
+      setRejectedCommit(pendingCommitRef.current);
+      trackPendingCommit("");
+    }
+  };
 
   const connect = () => {
     setError("");
@@ -639,42 +715,29 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
       const msg = JSON.parse(event.data);
       if (msg.type === "assigned") {
         setAssignment(msg);
-        setCommitted("");
-        setDraft("");
-        setPendingCommit("");
+        resetAnswerState();
+        setError("");
         setActivity("接到问题");
       }
       if (msg.type === "fragment_ack") {
-        const text = msg.fragment ?? "";
-        setCommitted((value) => value + text);
-        setDraft((value) => (value.startsWith(text) ? value.slice(text.length) : value));
-        setPendingCommit("");
-        setClientSeq((value) => value + 1);
-        setActivity("正在伪装智能");
+        editorRef.current?.applyCommit(msg.fragment ?? "");
       }
       if (msg.type === "finish_ack") {
-        setAssignment(null);
-        setCommitted("");
-        setDraft("");
-        setPendingCommit("");
-        setActivity("在线等锅");
-        ws.send(JSON.stringify({ type: "available" }));
+        setShiftCount((value) => value + 1);
+        backToWaiting();
       }
       if (msg.type === "skip_ack") {
-        setAssignment(null);
-        setCommitted("");
-        setDraft("");
-        setPendingCommit("");
-        setActivity("在线等锅");
-        ws.send(JSON.stringify({ type: "available" }));
+        backToWaiting();
       }
       if (msg.type === "error") {
-        setError(translateError(msg.message ?? "websocket error"));
+        handleServerError(msg.message ?? "websocket error");
       }
     };
     ws.onclose = () => {
       setConnected(false);
       setActivity("离线摸鱼");
+      setAssignment(null);
+      resetAnswerState();
       wsRef.current = null;
     };
     ws.onerror = () => setError("连假 AI 工厂的线都断了。");
@@ -684,17 +747,23 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
     wsRef.current?.close();
   };
 
+  useEffect(() => () => wsRef.current?.close(), []);
+
   useEffect(() => {
-    if (!assignment || !draft || pendingCommit || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    if (!assignment || !draft || pendingCommit || draft === rejectedCommit) {
+      return;
+    }
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
       return;
     }
     const text = draft;
     const timer = window.setTimeout(() => {
-      setPendingCommit(text);
-      wsRef.current?.send(JSON.stringify({ type: "fragment", client_seq: clientSeq, text }));
+      trackPendingCommit(text);
+      ws.send(JSON.stringify({ type: "fragment", client_seq: clientSeqRef.current, text }));
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [assignment, draft, pendingCommit, clientSeq]);
+  }, [assignment, draft, pendingCommit, clientSeq, rejectedCommit]);
 
   const questionText = useMemo(() => {
     return (
@@ -704,13 +773,18 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
     );
   }, [assignment]);
 
+  const queueWait = useMemo(() => {
+    if (!assignment) return 0;
+    return Math.max(0, Math.round((Date.now() - new Date(assignment.created_at).getTime()) / 1000));
+  }, [assignment]);
+
   const finish = () => wsRef.current?.send(JSON.stringify({ type: "finish" }));
   const skip = () => wsRef.current?.send(JSON.stringify({ type: "skip" }));
 
   return (
     <section className="workspace answer-workspace">
       <div className="operator-panel">
-        <div className={`status-orbit ${connected ? "live" : ""}`}>
+        <div className={`status-orbit ${connected ? (assignment ? "busy" : "live") : ""}`}>
           <Bot size={28} />
         </div>
         <div>
@@ -718,6 +792,9 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
           <p>{auth.user.guest ? "游客回答，积分只在这场梦里有效" : "持久积分，数据库替你记这笔辛苦钱"}</p>
         </div>
         <div className="operator-actions">
+          <span className="shift-meter" title="本次在线已交付的回答数">
+            本班 {shiftCount} 单
+          </span>
           {!connected ? (
             <button className="primary" data-testid="answer-online" onClick={connect}>
               <Wifi size={18} />
@@ -734,16 +811,25 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
 
       <div className="answer-grid">
         <article className="question-pane">
-          <h3>刚塞过来的问题</h3>
+          <div className="pane-head">
+            <h3>刚塞过来的问题</h3>
+            {assignment && (
+              <span className="ticket-meta">
+                工单 #{assignment.request_id.slice(-6)} · 已等 {queueWait}s
+              </span>
+            )}
+          </div>
           <pre data-testid="answer-incoming">{questionText || "暂无问题，AI 工厂还没派活。"}</pre>
         </article>
         <article className="type-pane">
           <InlineAnswerEditor
-            committed={committed}
-            draft={draft}
+            ref={editorRef}
+            committedFrags={committedFrags}
             disabled={!assignment}
             maxLength={Math.max(0, outputLimit - committed.length)}
+            pendingLength={pendingCommit.length}
             onDraftChange={setDraft}
+            onCommitted={applyAckedCommit}
           />
           <div className="composer-footer">
             <span>
@@ -778,35 +864,109 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
   );
 }
 
-function InlineAnswerEditor({
-  committed,
-  draft,
-  disabled,
-  maxLength,
-  onDraftChange
-}: {
-  committed: string;
-  draft: string;
-  disabled: boolean;
-  maxLength: number;
-  onDraftChange: (next: string) => void;
-}) {
+type AnswerEditorHandle = {
+  applyCommit(text: string): void;
+  reset(): void;
+};
+
+const InlineAnswerEditor = forwardRef<
+  AnswerEditorHandle,
+  {
+    committedFrags: string[];
+    disabled: boolean;
+    maxLength: number;
+    pendingLength: number;
+    onDraftChange: (next: string) => void;
+    onCommitted: (text: string, remaining: string) => void;
+  }
+>(function InlineAnswerEditor({ committedFrags, disabled, maxLength, pendingLength, onDraftChange, onCommitted }, ref) {
   const draftRef = useRef<HTMLSpanElement | null>(null);
   const composingRef = useRef(false);
-  const focusedRef = useRef(false);
+  const queuedCommitsRef = useRef<string[]>([]);
+  const lastDraftRef = useRef("");
 
-  useEffect(() => {
-    const draftElement = draftRef.current;
-    if (!draftElement || !focusedRef.current || disabled || composingRef.current) return;
-    placeCaretAtEnd(draftElement);
-  }, [committed, draft, disabled]);
+  const draftText = () => draftRef.current?.textContent ?? "";
 
   const syncDraftFromDOM = () => {
     if (composingRef.current) return;
-    const draftElement = draftRef.current;
-    if (!draftElement) return;
-    onDraftChange((draftElement.textContent ?? "").slice(0, maxLength));
+    const next = draftText().slice(0, maxLength);
+    lastDraftRef.current = next;
+    onDraftChange(next);
   };
+
+  // Chromium's undo manager is document-global and survives contentEditable
+  // toggling, so undo/redo is neutralized by snapping the DOM back to the last
+  // legitimate draft instead of trying to clear the stack.
+  const handleInput = (event: React.FormEvent<HTMLSpanElement>) => {
+    const inputType = (event.nativeEvent as InputEvent).inputType ?? "";
+    if (inputType === "historyUndo" || inputType === "historyRedo") {
+      const span = draftRef.current;
+      if (span && !composingRef.current) {
+        span.textContent = lastDraftRef.current;
+        if (document.activeElement === span) {
+          placeCaretAtEnd(span);
+        }
+      }
+      return;
+    }
+    syncDraftFromDOM();
+  };
+
+  const applyCommitNow = (text: string) => {
+    const span = draftRef.current;
+    if (!span) {
+      onCommitted(text, "");
+      return;
+    }
+    span.normalize();
+    const node = span.firstChild;
+    if (node?.nodeType === Node.TEXT_NODE && (node as Text).data.startsWith(text)) {
+      (node as Text).deleteData(0, text.length);
+    } else {
+      // acked text must never survive in the draft, or it would be re-sent as new text
+      const current = span.textContent ?? "";
+      const occurrence = current.indexOf(text);
+      if (occurrence >= 0) {
+        span.textContent = current.slice(0, occurrence) + current.slice(occurrence + text.length);
+      } else {
+        let shared = 0;
+        while (shared < text.length && shared < current.length && text[shared] === current[shared]) {
+          shared += 1;
+        }
+        span.textContent = current.slice(shared);
+      }
+      if (document.activeElement === span) {
+        placeCaretAtEnd(span);
+      }
+    }
+    lastDraftRef.current = span.textContent ?? "";
+    onCommitted(text, lastDraftRef.current);
+  };
+
+  const flushQueuedCommits = () => {
+    while (queuedCommitsRef.current.length > 0) {
+      applyCommitNow(queuedCommitsRef.current.shift() as string);
+    }
+  };
+
+  useImperativeHandle(ref, () => ({
+    applyCommit(text: string) {
+      if (text && composingRef.current) {
+        queuedCommitsRef.current.push(text);
+        return;
+      }
+      applyCommitNow(text);
+    },
+    reset() {
+      queuedCommitsRef.current = [];
+      composingRef.current = false;
+      lastDraftRef.current = "";
+      const span = draftRef.current;
+      if (span) {
+        span.textContent = "";
+      }
+    }
+  }));
 
   const startComposition = () => {
     composingRef.current = true;
@@ -814,25 +974,64 @@ function InlineAnswerEditor({
 
   const finishComposition = () => {
     composingRef.current = false;
-    window.requestAnimationFrame(syncDraftFromDOM);
+    window.requestAnimationFrame(() => {
+      // a new composition may have started before this frame; keep the queue for its end
+      if (composingRef.current) return;
+      const span = draftRef.current;
+      if (span) {
+        // truncate before the flush: pre-flush content matches the closure's budget
+        const text = span.textContent ?? "";
+        if (text.length > maxLength) {
+          span.textContent = text.slice(0, maxLength);
+          if (document.activeElement === span) {
+            placeCaretAtEnd(span);
+          }
+        }
+      }
+      flushQueuedCommits();
+      syncDraftFromDOM();
+    });
   };
 
-  const keepDraftCaret = () => {
-    const draftElement = draftRef.current;
-    if (!draftElement || disabled) return;
-    focusedRef.current = true;
-    draftElement.focus();
-    placeCaretAtEnd(draftElement);
+  const handleBlur = () => {
+    if (composingRef.current) {
+      finishComposition();
+    }
+  };
+
+  const focusDraft = () => {
+    const span = draftRef.current;
+    if (!span || disabled) return;
+    const selection = window.getSelection();
+    if (document.activeElement === span && selection?.anchorNode && span.contains(selection.anchorNode)) {
+      return;
+    }
+    span.focus();
+    placeCaretAtEnd(span);
   };
 
   const protectDraftLimit = (event: React.FormEvent<HTMLSpanElement>) => {
     const nativeEvent = event.nativeEvent as InputEvent;
     const inputType = nativeEvent.inputType ?? "";
+    if (inputType === "historyUndo" || inputType === "historyRedo") {
+      event.preventDefault();
+      return;
+    }
     if (nativeEvent.isComposing || inputType === "insertCompositionText") {
       return;
     }
-    const insertsText = inputType.startsWith("insert") || inputType === "insertFromPaste";
-    if (insertsText && draft.length >= maxLength) {
+    const span = draftRef.current;
+    if (span && pendingLength > 0) {
+      // the in-flight fragment is the draft head; edits inside it would desync ack reconciliation
+      const selection = window.getSelection();
+      const start = selectionStartOffset(span, selection);
+      const effectiveStart = inputType === "deleteContentBackward" && selection?.isCollapsed ? start - 1 : start;
+      if (effectiveStart < pendingLength) {
+        event.preventDefault();
+        return;
+      }
+    }
+    if (inputType.startsWith("insert") && draftText().length >= maxLength) {
       event.preventDefault();
     }
   };
@@ -844,49 +1043,46 @@ function InlineAnswerEditor({
   };
 
   const handlePaste = (event: React.ClipboardEvent<HTMLSpanElement>) => {
-    if (disabled) {
-      event.preventDefault();
-      return;
-    }
     event.preventDefault();
+    if (disabled) return;
     const paste = event.clipboardData.getData("text/plain");
-    const remaining = Math.max(0, maxLength - draft.length);
-    document.execCommand("insertText", false, paste.slice(0, remaining));
+    const remaining = Math.max(0, maxLength - draftText().length);
+    if (remaining > 0) {
+      document.execCommand("insertText", false, paste.slice(0, remaining));
+    }
   };
 
   return (
     <div className="answer-editor" data-testid="answer-editor">
-      <div className={disabled ? "answer-editor-body disabled" : "answer-editor-body"} onClick={keepDraftCaret}>
+      <div className={disabled ? "answer-editor-body disabled" : "answer-editor-body"} onClick={focusDraft}>
         <span className="locked-inline" contentEditable={false} data-testid="answer-committed">
-          {committed}
+          {committedFrags.map((text, index) => (
+            <span className="locked-frag" key={index}>
+              {text}
+            </span>
+          ))}
         </span>
         <span
           aria-disabled={disabled}
           className="draft-inline"
           contentEditable={!disabled}
-          data-placeholder={committed ? "" : "在这里装作 AI 思考"}
+          data-placeholder={committedFrags.length > 0 ? "" : "在这里装作 AI 思考"}
           data-testid="answer-draft"
           onBeforeInput={protectDraftLimit}
-          onBlur={() => {
-            focusedRef.current = false;
-          }}
+          onBlur={handleBlur}
           onCompositionEnd={finishComposition}
           onCompositionStart={startComposition}
-          onFocus={keepDraftCaret}
-          onInput={syncDraftFromDOM}
+          onInput={handleInput}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           ref={draftRef}
           role="textbox"
           spellCheck
-          suppressContentEditableWarning
-        >
-          {draft}
-        </span>
+        />
       </div>
     </div>
   );
-}
+});
 
 async function api<T>(
   path: string,
@@ -923,6 +1119,8 @@ function errorMessage(err: unknown) {
   return translateError(err instanceof Error ? err.message : String(err));
 }
 
+const assignmentGoneErrors = new Set(["no active assignment", "request not found", "request is already completed"]);
+
 function translateError(message: string) {
   const normalized = message.trim();
   const known: Record<string, string> = {
@@ -932,7 +1130,11 @@ function translateError(message: string) {
     "passwords do not match": "两次密码不一样，别让模型幻觉背锅。",
     "insufficient points": "积分不够，提问也要交 5 分智商税。",
     "input exceeds limit": "问题太长了，真人假 AI 会先下班。",
-    "output exceeds limit": "回答太长了，假智能的嘴也有上限。",
+    "output exceeds limit": "回答太长了，假智能的嘴也有上限，删掉一点再发。",
+    "no active assignment": "这单已经没了（被取消、超时或已完结），自动回到等锅位。",
+    "request not found": "这单查无踪影，回等锅位重新接活。",
+    "request is already completed": "这单已经收场了，不用再装。",
+    "cannot skip after committed fragment": "已经开始装了，跳不掉，只能收工。",
     "websocket error": "回答通道断了，AI 工厂临时停电。"
   };
   if (known[normalized]) {
@@ -961,6 +1163,16 @@ function storedThemeChoice(): ThemeChoice {
 
 function systemThemeNow(): ResolvedTheme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function selectionStartOffset(span: HTMLElement, selection: Selection | null): number {
+  if (!selection || selection.rangeCount === 0) return Number.MAX_SAFE_INTEGER;
+  const range = selection.getRangeAt(0);
+  if (!span.contains(range.startContainer)) return Number.MAX_SAFE_INTEGER;
+  const probe = document.createRange();
+  probe.selectNodeContents(span);
+  probe.setEnd(range.startContainer, range.startOffset);
+  return probe.toString().length;
 }
 
 function placeCaretAtEnd(element: HTMLElement) {
