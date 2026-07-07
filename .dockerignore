@@ -1,0 +1,12 @@
+.git
+.github
+frontend/node_modules
+frontend/dist
+frontend/playwright-report
+frontend/test-results
+frontend/tsconfig.tsbuildinfo
+backend/bin
+*.log
+.env
+.env.*
+.DS_Store
