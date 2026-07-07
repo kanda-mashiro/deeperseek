@@ -1,4 +1,7 @@
-.PHONY: test build dev-backend dev-frontend
+.PHONY: test build dev-backend dev-frontend simload
+
+simload:
+	cd backend && go run ./cmd/simload -scenario all
 
 test:
 	cd backend && go test ./...
