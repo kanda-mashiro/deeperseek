@@ -178,6 +178,83 @@ func TestChatCompletionsFallbackAnswersWhenNoHumanResponder(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsFallbackRecoversAfterSilentResponder(t *testing.T) {
+	var upstreamCalls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fallback \"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	svc := core.NewService()
+	server := httptest.NewServer(NewServerWithOptions(svc, ServerOptions{
+		Fallback: FallbackConfig{
+			Enabled:       true,
+			BaseURL:       upstream.URL,
+			APIKey:        "test-fallback-key",
+			Model:         "deepseek/deepseek-v4-flash",
+			Delay:         10 * time.Millisecond,
+			ChunkDelay:    time.Millisecond,
+			MaxChunkRunes: 16,
+			Client:        upstream.Client(),
+		},
+	}).Handler())
+	defer server.Close()
+
+	// a responder that accepts the assignment but never commits anything
+	silent := svc.GuestSession("silent")
+	sessionID, assignments, err := svc.RegisterResponder(silent.Token)
+	if err != nil {
+		t.Fatalf("register responder: %v", err)
+	}
+	defer svc.UnregisterResponder(sessionID)
+	go func() {
+		for range assignments {
+		}
+	}()
+	if err := svc.MarkResponderAvailable(sessionID); err != nil {
+		t.Fatalf("mark available: %v", err)
+	}
+
+	requester := svc.GuestSession("")
+	body := []byte(`{"model":"deeperseek-human","stream":true,"messages":[{"role":"user","content":"silent holder"}]}`)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+requester.Token)
+
+	// let at least one fallback tick fail against the assigned request, then
+	// simulate the assigned-timeout sweep returning it to the queue
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		svc.SweepTimeouts(time.Now().UTC().Add(time.Hour), time.Millisecond, 0)
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	content, finish, done := readStreamForTest(t, resp)
+	if content != "fallback answer" || finish != string(core.FinishStop) || !done {
+		t.Fatalf("unexpected fallback stream: content=%q finish=%q done=%v", content, finish, done)
+	}
+	if atomic.LoadInt32(&upstreamCalls) != 1 {
+		t.Fatalf("expected one upstream call, got %d", upstreamCalls)
+	}
+}
+
 func TestChatCompletionsFallbackStreamsLargeUpstreamDeltaSlowly(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

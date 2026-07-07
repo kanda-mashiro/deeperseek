@@ -96,7 +96,12 @@ func (s *Server) scheduleFallback(req *core.Request) {
 
 			sessionID, assignment, ok := s.svc.AcquireFallbackAssignment(requestID)
 			if !ok {
-				slog.Debug("fallback not acquired", "request_id", requestID, "attempt", attempt)
+				if s.svc.FallbackStillWanted(requestID) {
+					// a human holds the assignment without committed output; the
+					// sweeper may requeue it, so keep watching (spec 4.2)
+					continue
+				}
+				slog.Debug("fallback no longer needed", "request_id", requestID, "attempt", attempt)
 				return
 			}
 			slog.Info("fallback acquired request", "request_id", requestID, "attempt", attempt)

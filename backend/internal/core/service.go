@@ -274,6 +274,17 @@ func (s *Service) AcquireFallbackAssignment(requestID string) (string, AssignedR
 	}, true
 }
 
+// FallbackStillWanted reports whether a request may still need the fallback
+// responder: it exists, is not terminal, and has no committed fragments yet.
+// A request assigned to a human who never commits returns to the queue via the
+// timeout sweeper, so the fallback keeps watching instead of giving up.
+func (s *Service) FallbackStillWanted(requestID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req := s.requests[requestID]
+	return req != nil && !isTerminal(req.Status) && len(s.fragments[requestID]) == 0
+}
+
 func (s *Service) RunTimeoutSweeper(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Second
