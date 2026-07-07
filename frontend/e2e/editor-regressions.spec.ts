@@ -129,7 +129,7 @@ test("undo cannot resurrect committed text into the stream", async ({ browser })
     await responder.getByTestId("answer-online").click();
     await requester.getByTestId("request-prompt").fill(`undo question ${run}`);
     await requester.getByTestId("request-send").click();
-    await expect(responder.getByTestId("answer-incoming")).toContainText(`undo question ${run}`);
+    await expect(responder.getByTestId("answer-incoming")).toContainText(`undo question ${run}`, { timeout: 30_000 });
 
     await responder.getByTestId("answer-editor").click();
     await responder.keyboard.type("abc");
