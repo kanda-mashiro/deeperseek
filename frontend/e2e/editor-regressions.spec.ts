@@ -54,7 +54,8 @@ test("responder auto-recovers to waiting when the request dies under them", asyn
     // typing into the dead assignment must not brick the pipeline
     await responder.getByTestId("answer-draft").fill(`too late ${run}`);
     await expect(responder.getByTestId("answer-activity")).toHaveText("在线等锅", { timeout: 10_000 });
-    await expect(responder.getByTestId("answer-draft")).toHaveText("");
+    // back to waiting unmounts the compose editor (no assignment => empty state)
+    await expect(responder.getByTestId("answer-draft")).toHaveCount(0);
 
     // pipeline is healthy again end to end
     await requester.getByTestId("request-prompt").fill(`second question ${run}`);

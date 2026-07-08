@@ -91,7 +91,7 @@ test("keeps animated controls consistent across required viewport sizes", async 
     await expectNoHorizontalOverflow(page);
 
     const animatedControlCount = await page.evaluate(() => {
-      const selectors = [".topbar", ".seg", ".primary", ".auth-menu-button", ".operator-panel", ".answer-grid"];
+      const selectors = [".topbar", ".seg", ".primary", ".auth-menu-button", ".operator-panel", ".answer-thread-pane"];
       return selectors
         .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
         .filter((element) => {

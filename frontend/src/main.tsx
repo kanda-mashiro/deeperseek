@@ -765,14 +765,6 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
     return () => window.clearTimeout(timer);
   }, [assignment, draft, pendingCommit, clientSeq, rejectedCommit]);
 
-  const questionText = useMemo(() => {
-    return (
-      assignment?.messages
-        .map((message) => `${message.role === "assistant" ? "上一位假 AI" : "用户"}：${message.content}`)
-        .join("\n\n") ?? ""
-    );
-  }, [assignment]);
-
   const queueWait = useMemo(() => {
     if (!assignment) return 0;
     return Math.max(0, Math.round((Date.now() - new Date(assignment.created_at).getTime()) / 1000));
@@ -809,57 +801,74 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
         </div>
       </div>
 
-      <div className="answer-grid">
-        <article className="question-pane">
-          <div className="pane-head">
-            <h3>刚塞过来的问题</h3>
-            {assignment && (
-              <span className="ticket-meta">
-                工单 #{assignment.request_id.slice(-6)} · 已等 {queueWait}s
-              </span>
+      <article className="answer-thread-pane">
+        <div className="pane-head">
+          <h3>对话现场</h3>
+          {assignment && (
+            <span className="ticket-meta">
+              工单 #{assignment.request_id.slice(-6)} · 已等 {queueWait}s
+            </span>
+          )}
+        </div>
+        <div className="answer-conversation">
+          <div className="incoming-turns" data-testid="answer-incoming">
+            {assignment ? (
+              assignment.messages.map((message, index) => (
+                <article
+                  className={message.role === "assistant" ? "turn ai-turn" : "turn user-turn"}
+                  key={index}
+                >
+                  <span className="turn-tag">{message.role === "assistant" ? "上一位假 AI" : "用户"}</span>
+                  <span className="turn-body">{message.content}</span>
+                </article>
+              ))
+            ) : (
+              <p className="muted answer-empty">暂无问题，AI 工厂还没派活，继续摸鱼。</p>
             )}
           </div>
-          <pre data-testid="answer-incoming">{questionText || "暂无问题，AI 工厂还没派活。"}</pre>
-        </article>
-        <article className="type-pane">
-          <InlineAnswerEditor
-            ref={editorRef}
-            committedFrags={committedFrags}
-            disabled={!assignment}
-            maxLength={Math.max(0, outputLimit - committed.length)}
-            pendingLength={pendingCommit.length}
-            onDraftChange={setDraft}
-            onCommitted={applyAckedCommit}
-          />
-          <div className="composer-footer">
-            <span>
-              {(committed.length + draft.length).toLocaleString()} / {outputLimit.toLocaleString()}
-            </span>
-            <div className="button-row">
-              <button
-                className="ghost"
-                data-testid="answer-skip"
-                onClick={skip}
-                disabled={!assignment || committed.length > 0}
-              >
-                <SkipForward size={17} />
-                跳过
-              </button>
-              <button
-                className="primary"
-                data-testid="answer-finish"
-                onClick={finish}
-                disabled={!assignment || committed.length === 0}
-              >
-                <Check size={17} />
-                收工
-              </button>
+          {assignment && (
+            <div className="turn self-turn answer-current">
+              <span className="turn-tag">你 · 正在假装 AI</span>
+              <InlineAnswerEditor
+                ref={editorRef}
+                committedFrags={committedFrags}
+                disabled={!assignment}
+                maxLength={Math.max(0, outputLimit - committed.length)}
+                pendingLength={pendingCommit.length}
+                onDraftChange={setDraft}
+                onCommitted={applyAckedCommit}
+              />
             </div>
+          )}
+        </div>
+        <div className="composer-footer">
+          <span>
+            {(committed.length + draft.length).toLocaleString()} / {outputLimit.toLocaleString()}
+          </span>
+          <div className="button-row">
+            <button
+              className="ghost"
+              data-testid="answer-skip"
+              onClick={skip}
+              disabled={!assignment || committed.length > 0}
+            >
+              <SkipForward size={17} />
+              跳过
+            </button>
+            <button
+              className="primary"
+              data-testid="answer-finish"
+              onClick={finish}
+              disabled={!assignment || committed.length === 0}
+            >
+              <Check size={17} />
+              收工
+            </button>
           </div>
-          {pendingCommit && <p className="muted">1 秒没删，这段话正在焊死成“智能”。</p>}
-          {error && <p className="error">{error}</p>}
-        </article>
-      </div>
+        </div>
+        {pendingCommit && <p className="muted">1 秒没删，这段话正在焊死成“智能”。</p>}
+        {error && <p className="error">{error}</p>}
+      </article>
     </section>
   );
 }
