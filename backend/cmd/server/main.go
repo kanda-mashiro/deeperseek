@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"deeperseek/backend/internal/core"
@@ -22,8 +23,10 @@ func main() {
 	defer cleanup()
 
 	server := httpapi.NewServerWithOptions(svc, httpapi.ServerOptions{
-		Fallback:  httpapi.DefaultFallbackConfigFromEnv(),
-		StaticDir: os.Getenv("STATIC_DIR"),
+		Fallback:   httpapi.DefaultFallbackConfigFromEnv(),
+		StaticDir:  os.Getenv("STATIC_DIR"),
+		RatePerMin: envInt("DEEPERSEEK_RATE_PER_MIN", 0), // 0 = disabled; set in prod
+		RateBurst:  envInt("DEEPERSEEK_RATE_BURST", 40),
 	})
 	go svc.RunTimeoutSweeper(context.Background(), time.Second)
 
@@ -31,6 +34,15 @@ func main() {
 	if err := http.ListenAndServe(addr, server.Handler()); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 // buildBackend selects the state engine from configuration: both DATABASE_URL

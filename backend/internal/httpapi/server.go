@@ -31,6 +31,7 @@ type Server struct {
 	staticDir string
 	mode      string
 	ready     func(context.Context) error
+	limiter   *rateLimiter
 }
 
 func NewServer(svc core.Backend) *Server {
@@ -38,8 +39,10 @@ func NewServer(svc core.Backend) *Server {
 }
 
 type ServerOptions struct {
-	Fallback  FallbackConfig
-	StaticDir string
+	Fallback   FallbackConfig
+	StaticDir  string
+	RatePerMin int
+	RateBurst  int
 }
 
 func NewServerWithOptions(svc core.Backend, options ServerOptions) *Server {
@@ -56,6 +59,7 @@ func NewServerWithOptions(svc core.Backend, options ServerOptions) *Server {
 		staticDir: options.StaticDir,
 		mode:      mode,
 		ready:     ready,
+		limiter:   newRateLimiter(options.RatePerMin, options.RateBurst),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -79,13 +83,13 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/ready", s.handleReady)
-	mux.HandleFunc("/api/register", s.handleRegister)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/guest", s.handleGuest)
+	mux.HandleFunc("/api/register", s.rateLimited(s.handleRegister))
+	mux.HandleFunc("/api/login", s.rateLimited(s.handleLogin))
+	mux.HandleFunc("/api/guest", s.rateLimited(s.handleGuest))
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/points/ledger", s.handleLedger)
 	mux.HandleFunc("/api/answers/", s.handleAnswerRoutes)
-	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	mux.HandleFunc("/v1/chat/completions", s.rateLimited(s.handleChatCompletions))
 	mux.HandleFunc("/ws/answer", s.handleAnswerWebSocket)
 	mux.HandleFunc("/", s.handleFrontend)
 	return withCORS(mux)

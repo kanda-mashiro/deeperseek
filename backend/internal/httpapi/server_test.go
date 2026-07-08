@@ -36,6 +36,54 @@ func TestHealthAndReadyReportMemoryMode(t *testing.T) {
 	}
 }
 
+func TestRateLimiterTokenBucket(t *testing.T) {
+	rl := newRateLimiter(60, 2) // 1 token/sec, burst 2
+	now := time.Now()
+	rl.clock = func() time.Time { return now }
+
+	if !rl.allow("ip1") || !rl.allow("ip1") {
+		t.Fatal("first two requests within burst should be allowed")
+	}
+	if rl.allow("ip1") {
+		t.Fatal("third request should be throttled once the burst is spent")
+	}
+	if !rl.allow("ip2") {
+		t.Fatal("a different key has its own bucket")
+	}
+	now = now.Add(1100 * time.Millisecond) // ~1 token refilled
+	if !rl.allow("ip1") {
+		t.Fatal("a refilled token should allow one more request")
+	}
+
+	var nilLimiter *rateLimiter
+	if !nilLimiter.allow("x") {
+		t.Fatal("a nil limiter must be a no-op (disabled)")
+	}
+}
+
+func TestServerRateLimitsGuestCreation(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServerWithOptions(svc, ServerOptions{RatePerMin: 60, RateBurst: 2}).Handler())
+	defer server.Close()
+
+	statuses := make([]int, 0, 4)
+	for i := 0; i < 4; i++ {
+		resp, err := http.Post(server.URL+"/api/guest", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatalf("guest %d: %v", i, err)
+		}
+		statuses = append(statuses, resp.StatusCode)
+		resp.Body.Close()
+	}
+	// burst of 2 allowed, the rest throttled (refill in a few ms is negligible)
+	if statuses[0] != http.StatusCreated || statuses[1] != http.StatusCreated {
+		t.Fatalf("first two guest creates should succeed, got %v", statuses)
+	}
+	if statuses[3] != http.StatusTooManyRequests {
+		t.Fatalf("expected later guest creates to be rate limited, got %v", statuses)
+	}
+}
+
 func TestChatCompletionsStreamEmitsHumanFragments(t *testing.T) {
 	svc := core.NewService()
 	server := httptest.NewServer(NewServer(svc).Handler())
