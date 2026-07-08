@@ -12,8 +12,8 @@ func TestStreamPubSubDeliversInOrder(t *testing.T) {
 	b := backendForTest(t)
 	ctx := context.Background()
 
-	ps, ch := b.streamChannel(ctx, "req1")
-	defer ps.Close()
+	cleanup, ch := b.streamChannel(ctx, "req1")
+	defer cleanup()
 	time.Sleep(100 * time.Millisecond) // let SUBSCRIBE settle before publishing
 
 	_ = b.publishStream(ctx, "req1", streamMessage{Kind: "fragment", Text: "hello ", Ordinal: 1})
@@ -38,8 +38,8 @@ func TestAssignmentPubSubDelivers(t *testing.T) {
 	b := backendForTest(t)
 	ctx := context.Background()
 
-	ps, ch := b.assignmentChannel(ctx, "sessX")
-	defer ps.Close()
+	cleanup, ch := b.assignmentChannel(ctx, "sessX")
+	defer cleanup()
 	time.Sleep(100 * time.Millisecond)
 
 	_ = b.publishAssignment(ctx, "sessX", core.AssignedRequest{

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -73,10 +74,14 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 		return nil, err
 	}
 
-	if err := b.enqueueRequest(ctx, reqID); err != nil {
+	// Coordination must outlive the requester's HTTP request: enqueue + drain on
+	// a background context so a client disconnect can't strand the queued request
+	// or abort an unrelated request mid-assignment.
+	bg := context.Background()
+	if err := b.enqueueRequest(bg, reqID); err != nil {
 		return nil, err
 	}
-	b.drainAssignments(ctx)
+	b.drainAssignments(bg)
 
 	return &core.Request{
 		ID: reqID, RequesterID: sess.UserID, RequesterSessionID: sess.ID, RequesterGuest: sess.Guest,
@@ -292,9 +297,12 @@ func (b *Backend) SweepTimeouts(now time.Time, assignedTimeout, streamingTimeout
 			}
 			rows.Close()
 			for _, id := range ids {
+				// re-assert the freshness predicate in the CAS so a request that was
+				// legitimately re-assigned between SELECT and UPDATE is not revoked
 				tag, err := b.pool.Exec(ctx,
-					`UPDATE requests SET status = 'queued', responder_session_id = '', responder_user_id = '', responder_guest = FALSE, updated_at = $2
-					 WHERE id = $1 AND status = 'assigned'`, id, now)
+					`UPDATE requests SET status = 'queued', responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
+						responder_kind = '', responder_display = '', updated_at = $2
+					 WHERE id = $1 AND status = 'assigned' AND updated_at <= $3`, id, now, cutoff)
 				if err == nil && tag.RowsAffected() > 0 {
 					_ = b.releaseLock(ctx, id)
 					_ = b.enqueueRequest(ctx, id)
@@ -320,6 +328,18 @@ func (b *Backend) SweepTimeouts(now time.Time, assignedTimeout, streamingTimeout
 			for _, r := range reqs {
 				tx, err := b.pool.Begin(ctx)
 				if err != nil {
+					continue
+				}
+				// re-check freshness under the row lock: a fragment committed after
+				// the SELECT bumps updated_at and must cancel this completion
+				var st string
+				var upd time.Time
+				if err := tx.QueryRow(ctx, `SELECT status, updated_at FROM requests WHERE id = $1 FOR UPDATE`, r.ID).Scan(&st, &upd); err != nil {
+					_ = tx.Rollback(ctx)
+					continue
+				}
+				if st != string(core.StatusStreaming) || upd.After(cutoff) {
+					_ = tx.Rollback(ctx)
 					continue
 				}
 				if err := b.completeRequestTx(ctx, tx, r, core.FinishPartial, now); err != nil {
@@ -367,16 +387,20 @@ func (b *Backend) RegisterResponder(token string) (string, <-chan core.AssignedR
 		return "", nil, err
 	}
 
-	ps, ch := b.assignmentChannel(ctx, sess.ID)
+	cleanup, ch := b.assignmentChannel(ctx, sess.ID)
 	hbCtx, cancelHB := context.WithCancel(context.Background())
 	go b.heartbeatLoop(hbCtx, sess.ID)
 
 	b.mu.Lock()
+	old := b.responders[sess.ID]
 	b.responders[sess.ID] = &responderConn{stop: func() {
 		cancelHB()
-		_ = ps.Close()
+		cleanup()
 	}}
 	b.mu.Unlock()
+	if old != nil {
+		old.stop() // reconnect on the same session: reap the stale conn's goroutines
+	}
 
 	// reconcile: if this session already owns an assignment (e.g. reconnect),
 	// deliver it so a missed pub/sub assignment is recovered.
@@ -420,7 +444,6 @@ func (b *Backend) UnregisterResponder(sessionID string) {
 	if err != nil || reqID == "" {
 		return
 	}
-	frags, _ := b.fragmentCount(ctx, reqID)
 	tx, err := b.pool.Begin(ctx)
 	if err != nil {
 		return
@@ -433,6 +456,11 @@ func (b *Backend) UnregisterResponder(sessionID string) {
 	if isTerminalStatus(req.Status) {
 		return
 	}
+	// read the fragment count inside the tx, after FOR UPDATE, so a fragment
+	// committed concurrently can't be missed (which would wrongly requeue an
+	// answer that already has committed output)
+	var frags int
+	_ = tx.QueryRow(ctx, `SELECT count(*) FROM fragments WHERE request_id = $1`, reqID).Scan(&frags)
 	var doneReason core.FinishReason
 	if frags == 0 {
 		if err := requeueRequestTx(ctx, tx, reqID, now); err != nil {
@@ -487,57 +515,99 @@ func (b *Backend) Subscribe(requestID string) (<-chan core.StreamEvent, func(), 
 		return nil, nil, err
 	}
 
-	ps, msgCh := b.streamChannel(ctx, requestID) // subscribe BEFORE snapshot
+	cleanup, msgCh := b.streamChannel(ctx, requestID) // subscribe BEFORE the first snapshot
 	out := make(chan core.StreamEvent, 64)
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() { once.Do(func() { close(done); cleanup() }) }
+
+	// emit is cancelable, so a gone consumer can never park this goroutine.
+	emit := func(ev core.StreamEvent) bool {
+		select {
+		case out <- ev:
+			return true
+		case <-done:
+			return false
+		}
+	}
 
 	go func() {
 		defer close(out)
-		lastOrdinal, terminal := b.replayInto(ctx, requestID, out)
-		if terminal {
+		lastOrdinal := 0
+		// Postgres is the source of truth; pub/sub (and a slow ticker) are only
+		// wake-ups. Each wake drains newly-persisted fragments, so a lost pub/sub
+		// message self-heals and the stream is contiguous and gap-free.
+		flush := func() bool {
+			n, ok := b.drainFragmentsAfter(ctx, requestID, lastOrdinal, emit)
+			lastOrdinal = n
+			if !ok {
+				return false
+			}
+			if term, finish := b.terminalState(ctx, requestID); term {
+				// drain once more: the final fragment can be committed with completion
+				n, ok = b.drainFragmentsAfter(ctx, requestID, lastOrdinal, emit)
+				lastOrdinal = n
+				if ok {
+					emit(core.StreamEvent{Type: core.StreamEventDone, RequestID: requestID, FinishReason: finish})
+				}
+				return false
+			}
+			return true
+		}
+		if !flush() {
 			return
 		}
-		for m := range msgCh {
-			switch m.Kind {
-			case "fragment":
-				if m.Ordinal > lastOrdinal {
-					lastOrdinal = m.Ordinal
-					out <- core.StreamEvent{Type: core.StreamEventFragment, RequestID: requestID, Text: m.Text}
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case _, ok := <-msgCh:
+				if !ok {
+					return
 				}
-			case "done":
-				out <- core.StreamEvent{Type: core.StreamEventDone, RequestID: requestID, FinishReason: core.FinishReason(m.Finish)}
+			case <-ticker.C:
+			}
+			if !flush() {
 				return
 			}
 		}
 	}()
 
-	return out, func() { _ = ps.Close() }, nil
+	return out, stop, nil
 }
 
-// replayInto emits the already-committed fragments in ordinal order and, if the
-// request is already terminal, the done event. Returns the highest ordinal seen
-// and whether the terminal event was emitted.
-func (b *Backend) replayInto(ctx context.Context, requestID string, out chan<- core.StreamEvent) (int, bool) {
-	rows, err := b.pool.Query(ctx, `SELECT ordinal, text FROM fragments WHERE request_id = $1 ORDER BY ordinal`, requestID)
-	lastOrdinal := 0
-	if err == nil {
-		for rows.Next() {
-			var ord int
-			var text string
-			if rows.Scan(&ord, &text) == nil {
-				lastOrdinal = ord
-				out <- core.StreamEvent{Type: core.StreamEventFragment, RequestID: requestID, Text: text}
-			}
-		}
-		rows.Close()
+// drainFragmentsAfter emits every persisted fragment with ordinal > after, in
+// order, via emit; it stops early if emit reports cancellation. Returns the new
+// high-water ordinal and whether it finished without cancellation.
+func (b *Backend) drainFragmentsAfter(ctx context.Context, requestID string, after int, emit func(core.StreamEvent) bool) (int, bool) {
+	rows, err := b.pool.Query(ctx, `SELECT ordinal, text FROM fragments WHERE request_id = $1 AND ordinal > $2 ORDER BY ordinal`, requestID, after)
+	if err != nil {
+		return after, true
 	}
+	defer rows.Close()
+	last := after
+	for rows.Next() {
+		var ord int
+		var text string
+		if rows.Scan(&ord, &text) != nil {
+			continue
+		}
+		if !emit(core.StreamEvent{Type: core.StreamEventFragment, RequestID: requestID, Text: text}) {
+			return last, false
+		}
+		last = ord
+	}
+	return last, true
+}
+
+func (b *Backend) terminalState(ctx context.Context, requestID string) (bool, core.FinishReason) {
 	var status, finish string
-	if err := b.pool.QueryRow(ctx, `SELECT status, finish_reason FROM requests WHERE id = $1`, requestID).Scan(&status, &finish); err == nil {
-		if isTerminalStatus(core.RequestStatus(status)) {
-			out <- core.StreamEvent{Type: core.StreamEventDone, RequestID: requestID, FinishReason: core.FinishReason(finish)}
-			return lastOrdinal, true
-		}
+	if err := b.pool.QueryRow(ctx, `SELECT status, finish_reason FROM requests WHERE id = $1`, requestID).Scan(&status, &finish); err != nil {
+		return false, ""
 	}
-	return lastOrdinal, false
+	return isTerminalStatus(core.RequestStatus(status)), core.FinishReason(finish)
 }
 
 func (b *Backend) CancelBeforeFirstFragment(requestID string) bool {
@@ -665,15 +735,24 @@ func (b *Backend) drainAssignments(ctx context.Context) {
 }
 
 func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
+	// Compensations run on a background context so the queue<->PG invariant is
+	// restored even if ctx is cancelled: the request is popped from ds:queue but
+	// still status='queued' in PG, so any early return must re-enqueue it.
+	bg := context.Background()
 	var userID, nickname string
 	var guest bool
 	err := b.pool.QueryRow(ctx, `SELECT user_id, guest, nickname FROM sessions WHERE id = $1`, sid).Scan(&userID, &guest, &nickname)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_ = b.releaseLock(ctx, reqID)
-		_ = b.enqueueRequest(ctx, reqID)
+		// responder session gone: requeue the request, drop the responder
+		_ = b.releaseLock(bg, reqID)
+		_ = b.enqueueRequest(bg, reqID)
 		return
 	}
 	if err != nil {
+		// transient: both parties still valid, return them to their pools
+		_ = b.releaseLock(bg, reqID)
+		_ = b.enqueueRequest(bg, reqID)
+		_ = b.addAvailable(bg, sid)
 		return
 	}
 	now := b.clock()
@@ -683,12 +762,15 @@ func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
 		 WHERE id = $6 AND status = 'queued'`,
 		sid, userID, guest, nickname, now, reqID)
 	if err != nil {
+		_ = b.releaseLock(bg, reqID)
+		_ = b.enqueueRequest(bg, reqID)
+		_ = b.addAvailable(bg, sid)
 		return
 	}
 	if tag.RowsAffected() == 0 {
 		// request no longer queued: responder is still good, return it to the pool
-		_ = b.releaseLock(ctx, reqID)
-		_ = b.addAvailable(ctx, sid)
+		_ = b.releaseLock(bg, reqID)
+		_ = b.addAvailable(bg, sid)
 		return
 	}
 	var msgs []byte

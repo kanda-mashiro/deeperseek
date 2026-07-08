@@ -178,6 +178,88 @@ func TestReactionRewardDeltas(t *testing.T) {
 	}
 }
 
+// Subscribing to an already-streaming request must replay the committed prefix,
+// deliver the rest, and finish with a complete (non-truncated) answer — the
+// CRITICAL streaming-reconciliation fix.
+func TestMidStreamSubscribeGetsFullAnswer(t *testing.T) {
+	a := backendForTest(t)
+	bInst := secondBackend(t)
+	ctx := context.Background()
+
+	requester := a.GuestSession("asker")
+	responder := bInst.GuestSession("worker")
+	sid, assignCh, _ := bInst.RegisterResponder(responder.Token)
+	_ = bInst.MarkResponderAvailable(sid)
+	req, _ := a.CreateRequest(ctx, requester.Token, "m", []core.Message{{Role: "user", Content: "q"}}, 0)
+	waitAssignment(t, assignCh, 5*time.Second)
+
+	// two fragments committed BEFORE anyone subscribes
+	if _, _, err := bInst.SubmitFragment(sid, 1, "hello "); err != nil {
+		t.Fatalf("frag1: %v", err)
+	}
+	if _, _, err := bInst.SubmitFragment(sid, 2, "world"); err != nil {
+		t.Fatalf("frag2: %v", err)
+	}
+
+	events, unsub, err := a.Subscribe(req.ID) // subscribe mid-stream on instance A
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer unsub()
+
+	if _, _, err := bInst.SubmitFragment(sid, 3, "!"); err != nil {
+		t.Fatalf("frag3: %v", err)
+	}
+	if err := bInst.Finish(sid); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	var got string
+	for {
+		ev := waitEvent(t, events, 6*time.Second)
+		if ev.Type == core.StreamEventDone {
+			break
+		}
+		got += ev.Text
+	}
+	if got != "hello world!" {
+		t.Fatalf("mid-stream subscribe must yield the full answer, got %q", got)
+	}
+}
+
+// Responder disconnect requeues before a fragment and partial-completes after —
+// SPEC 4.5, verifying the fragment count is read inside the transaction.
+func TestResponderDisconnectLifecycle(t *testing.T) {
+	a := backendForTest(t)
+	ctx := context.Background()
+
+	requester := a.GuestSession("asker")
+	responder := a.GuestSession("worker")
+	sid, assignCh, _ := a.RegisterResponder(responder.Token)
+	_ = a.MarkResponderAvailable(sid)
+	req, _ := a.CreateRequest(ctx, requester.Token, "m", []core.Message{{Role: "user", Content: "q"}}, 0)
+	waitAssignment(t, assignCh, 5*time.Second)
+
+	a.UnregisterResponder(sid)
+	snap, _, _ := a.RequestSnapshot(req.ID)
+	if snap.Status != core.StatusQueued || snap.ResponderSessionID != "" || snap.ResponderKind != "" {
+		t.Fatalf("disconnect before fragment should requeue + clear responder: %+v", snap)
+	}
+
+	responder2 := a.GuestSession("worker2")
+	sid2, assignCh2, _ := a.RegisterResponder(responder2.Token)
+	_ = a.MarkResponderAvailable(sid2)
+	waitAssignment(t, assignCh2, 5*time.Second) // requeued request reassigned
+	if _, _, err := a.SubmitFragment(sid2, 1, "partial"); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	a.UnregisterResponder(sid2)
+	snap2, text, _ := a.RequestSnapshot(req.ID)
+	if snap2.Status != core.StatusTimeoutCompleted || snap2.FinishReason != core.FinishPartial || text != "partial" {
+		t.Fatalf("disconnect after fragment should partial-complete: status=%s reason=%s text=%q", snap2.Status, snap2.FinishReason, text)
+	}
+}
+
 func TestFragmentIdempotency(t *testing.T) {
 	a := backendForTest(t)
 	bInst := secondBackend(t)
