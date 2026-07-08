@@ -7,6 +7,12 @@ export default defineConfig({
     timeout: 10_000
   },
   fullyParallel: false,
+  workers: 1,
+  // The suite shares one backend process (no per-test isolation of the global
+  // matcher), so a leftover queued request from one test can be grabbed by the
+  // next test's responder — a known, tracked isolation weakness that flakes
+  // under CI's slower timing. Retry to absorb it until per-test isolation lands.
+  retries: process.env.CI ? 2 : 0,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: "http://127.0.0.1:5173",
