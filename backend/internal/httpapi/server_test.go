@@ -14,6 +14,28 @@ import (
 	"deeperseek/backend/internal/core"
 )
 
+func TestHealthAndReadyReportMemoryMode(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServer(svc).Handler())
+	defer server.Close()
+
+	for _, path := range []string{"/api/health", "/api/ready"} {
+		resp, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, resp.StatusCode)
+		}
+		var body map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if body["mode"] != "memory" {
+			t.Fatalf("%s: expected memory mode, got %q", path, body["mode"])
+		}
+	}
+}
+
 func TestChatCompletionsStreamEmitsHumanFragments(t *testing.T) {
 	svc := core.NewService()
 	server := httptest.NewServer(NewServer(svc).Handler())

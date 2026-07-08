@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,11 +18,19 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// pinger is implemented by backends with external dependencies (the pgredis
+// backend); the memory backend does not, so it is always ready.
+type pinger interface {
+	Ping(context.Context) error
+}
+
 type Server struct {
 	svc       core.Backend
 	upgrader  websocket.Upgrader
 	fallback  FallbackConfig
 	staticDir string
+	mode      string
+	ready     func(context.Context) error
 }
 
 func NewServer(svc core.Backend) *Server {
@@ -35,10 +44,18 @@ type ServerOptions struct {
 
 func NewServerWithOptions(svc core.Backend, options ServerOptions) *Server {
 	fallback := options.Fallback.withDefaults()
+	mode := "memory"
+	var ready func(context.Context) error
+	if p, ok := svc.(pinger); ok {
+		mode = "pgredis"
+		ready = p.Ping
+	}
 	return &Server{
 		svc:       svc,
 		fallback:  fallback,
 		staticDir: options.StaticDir,
+		mode:      mode,
+		ready:     ready,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -61,6 +78,7 @@ func DefaultFallbackConfigFromEnv() FallbackConfig {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/ready", s.handleReady)
 	mux.HandleFunc("/api/register", s.handleRegister)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/guest", s.handleGuest)
@@ -73,12 +91,32 @@ func (s *Server) Handler() http.Handler {
 	return withCORS(mux)
 }
 
+// handleHealth is liveness: the process is up. It never touches dependencies.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": s.mode})
+}
+
+// handleReady is readiness: in distributed mode it verifies Postgres + Redis are
+// reachable so a pod that lost a dependency is pulled from rotation. In memory
+// mode there are no dependencies, so it is always ready.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if s.ready != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := s.ready(ctx); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "not_ready", err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "mode": s.mode})
 }
 
 func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
