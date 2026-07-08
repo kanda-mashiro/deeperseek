@@ -63,11 +63,12 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 
 	msgs, _ := json.Marshal(messages)
 	reqID := newID("req")
+	category := core.QuestionCategory(messages)
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO requests (id, requester_id, requester_session_id, requester_guest, messages, model,
-			status, frozen_points, output_limit, reaction, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, 'none', $9, $9)`,
-		reqID, sess.UserID, sess.ID, sess.Guest, msgs, model, frozen, maxOutputChars, now); err != nil {
+			status, frozen_points, output_limit, reaction, board_eligible, question_category, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, 'none', $9, $10, $11, $11)`,
+		reqID, sess.UserID, sess.ID, sess.Guest, msgs, model, frozen, maxOutputChars, sess.Guest, category, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -85,8 +86,9 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 
 	return &core.Request{
 		ID: reqID, RequesterID: sess.UserID, RequesterSessionID: sess.ID, RequesterGuest: sess.Guest,
-		RequesterKind: core.KindHuman, Messages: messages, Model: model, Status: core.StatusQueued,
-		FrozenPoints: frozen, OutputLimit: maxOutputChars, Reaction: core.ReactionNone, CreatedAt: now, UpdatedAt: now,
+		RequesterKind: core.KindHuman, BoardEligible: sess.Guest, Messages: messages, Model: model,
+		Status: core.StatusQueued, FrozenPoints: frozen, OutputLimit: maxOutputChars, Reaction: core.ReactionNone,
+		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 

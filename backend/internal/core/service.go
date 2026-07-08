@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -181,6 +182,7 @@ func (s *Service) CreateRequest(ctx context.Context, token string, model string,
 		RequesterSessionID: session.ID,
 		RequesterGuest:     session.Guest,
 		RequesterKind:      KindHuman,
+		BoardEligible:      session.Guest, // guests default to the public board; registered users are private
 		Messages:           append([]Message(nil), messages...),
 		Model:              model,
 		Status:             StatusQueued,
@@ -534,6 +536,64 @@ func (s *Service) RequestSnapshot(requestID string) (*Request, string, error) {
 		return nil, "", ErrRequestNotFound
 	}
 	return cloneRequest(req), s.answerTextLocked(requestID), nil
+}
+
+// QuestionCategory derives a non-content, structural label for a question set so
+// the spectator board can describe it without leaking its text.
+func QuestionCategory(messages []Message) string {
+	runes := 0
+	userTurns := 0
+	for _, m := range messages {
+		runes += utf8.RuneCountInString(m.Content)
+		if m.Role == "user" {
+			userTurns++
+		}
+	}
+	category := "常规提问"
+	switch {
+	case runes <= 40:
+		category = "闪电问答"
+	case runes > 400:
+		category = "长篇大论"
+	}
+	if userTurns > 1 {
+		category += " · 连续追问"
+	}
+	return category
+}
+
+// Board returns the spectator-safe projection of board-eligible requests, newest
+// first, excluding abandoned ones.
+func (s *Service) Board(limit int) ([]BoardTicket, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var reqs []*Request
+	for _, r := range s.requests {
+		if r.BoardEligible && r.Status != StatusAbandoned {
+			reqs = append(reqs, r)
+		}
+	}
+	sort.Slice(reqs, func(i, j int) bool { return reqs[i].CreatedAt.After(reqs[j].CreatedAt) })
+	if len(reqs) > limit {
+		reqs = reqs[:limit]
+	}
+	tickets := make([]BoardTicket, 0, len(reqs))
+	for _, r := range reqs {
+		tickets = append(tickets, BoardTicket{
+			RequestID:        r.ID,
+			Category:         QuestionCategory(r.Messages),
+			Status:           r.Status,
+			ResponderKind:    r.ResponderKind,
+			ResponderDisplay: r.ResponderDisplay,
+			Reaction:         r.Reaction,
+			AnswerLength:     utf8.RuneCountInString(s.answerTextLocked(r.ID)),
+			CreatedAt:        r.CreatedAt,
+		})
+	}
+	return tickets, nil
 }
 
 func (s *Service) LedgerForUser(token string) ([]PointEntry, Balance, error) {

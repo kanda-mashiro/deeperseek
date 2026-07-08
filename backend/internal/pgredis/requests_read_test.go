@@ -72,6 +72,33 @@ func TestFallbackStillWantedTransitions(t *testing.T) {
 	}
 }
 
+func TestBoardProjectsEligibleRequests(t *testing.T) {
+	b := backendForTest(t)
+	ctx := context.Background()
+
+	guest := b.GuestSession("")
+	req, err := b.CreateRequest(ctx, guest.Token, "m", []core.Message{{Role: "user", Content: "why is the sky blue"}}, 0)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// a registered user's request must NOT appear on the public board
+	reg, _ := b.Register("alice", "Alice", "pass1234", "pass1234")
+	if _, err := b.CreateRequest(ctx, reg.Token, "m", []core.Message{{Role: "user", Content: "private"}}, 0); err != nil {
+		t.Fatalf("registered create: %v", err)
+	}
+
+	board, err := b.Board(50)
+	if err != nil {
+		t.Fatalf("board: %v", err)
+	}
+	if len(board) != 1 || board[0].RequestID != req.ID {
+		t.Fatalf("board should list only the guest request, got %+v", board)
+	}
+	if board[0].Category == "" || board[0].Status != core.StatusQueued {
+		t.Fatalf("unexpected ticket: %+v", board[0])
+	}
+}
+
 func TestActiveRequestForResponder(t *testing.T) {
 	b := backendForTest(t)
 	ctx := context.Background()

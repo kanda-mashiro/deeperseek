@@ -369,6 +369,29 @@ func TestResponderSourceTags(t *testing.T) {
 	}
 }
 
+func TestBoardListsGuestRequestsNotRegistered(t *testing.T) {
+	svc := NewService()
+	guest := svc.GuestSession("")
+	reg, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")
+	gReq, err := svc.CreateRequest(context.Background(), guest.Token, "m", []Message{{Role: "user", Content: "hi"}}, 0)
+	if err != nil {
+		t.Fatalf("guest create: %v", err)
+	}
+	if _, err := svc.CreateRequest(context.Background(), reg.Token, "m", []Message{{Role: "user", Content: "private question"}}, 0); err != nil {
+		t.Fatalf("registered create: %v", err)
+	}
+	board, err := svc.Board(50)
+	if err != nil {
+		t.Fatalf("board: %v", err)
+	}
+	if len(board) != 1 || board[0].RequestID != gReq.ID {
+		t.Fatalf("board should list only the guest (public) request, got %+v", board)
+	}
+	if board[0].Category != "闪电问答" {
+		t.Fatalf("expected short-question category, got %q", board[0].Category)
+	}
+}
+
 func TestInputAndOutputLimits(t *testing.T) {
 	svc := NewService()
 	requester, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")

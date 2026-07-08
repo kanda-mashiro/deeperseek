@@ -89,6 +89,7 @@ type Request struct {
 	ResponderGuest     bool
 	ResponderKind      string
 	ResponderDisplay   string
+	BoardEligible      bool
 	FrozenPoints       int
 	QuestionCharged    bool
 	OutputLimit        int
@@ -141,4 +142,18 @@ type AssignedRequest struct {
 	RequestID string    `json:"request_id"`
 	Messages  []Message `json:"messages"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// BoardTicket is the spectator-safe projection of a request: no account, token,
+// session id, or raw question — only a structural category, who is answering,
+// and how it is going.
+type BoardTicket struct {
+	RequestID        string        `json:"request_id"`
+	Category         string        `json:"category"`
+	Status           RequestStatus `json:"status"`
+	ResponderKind    string        `json:"responder_kind"`
+	ResponderDisplay string        `json:"responder_display"`
+	Reaction         Reaction      `json:"reaction"`
+	AnswerLength     int           `json:"answer_length"`
+	CreatedAt        time.Time     `json:"created_at"`
 }

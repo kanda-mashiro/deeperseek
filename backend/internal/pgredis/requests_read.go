@@ -17,7 +17,7 @@ const notTerminalSQL = `status NOT IN ('completed', 'timeout_completed', 'abando
 const requestCols = `id, requester_id, requester_session_id, requester_guest, messages, model,
 	status, responder_session_id, responder_user_id, responder_guest, frozen_points,
 	question_charged, output_limit, finish_reason, reaction, created_at, updated_at, completed_at,
-	requester_kind, responder_kind, responder_display`
+	requester_kind, responder_kind, responder_display, board_eligible`
 
 func isTerminalStatus(status core.RequestStatus) bool {
 	return status == core.StatusCompleted || status == core.StatusTimeoutCompleted || status == core.StatusAbandoned
@@ -32,7 +32,7 @@ func scanRequest(row pgx.Row) (*core.Request, error) {
 		&r.ID, &r.RequesterID, &r.RequesterSessionID, &r.RequesterGuest, &msgs, &r.Model,
 		&status, &r.ResponderSessionID, &r.ResponderUserID, &r.ResponderGuest, &r.FrozenPoints,
 		&r.QuestionCharged, &r.OutputLimit, &finish, &reaction, &r.CreatedAt, &r.UpdatedAt, &completedAt,
-		&r.RequesterKind, &r.ResponderKind, &r.ResponderDisplay,
+		&r.RequesterKind, &r.ResponderKind, &r.ResponderDisplay, &r.BoardEligible,
 	); err != nil {
 		return nil, err
 	}
@@ -98,6 +98,35 @@ func (b *Backend) activeRequestForResponder(ctx context.Context, sid string) (st
 		return "", nil
 	}
 	return id, err
+}
+
+func (b *Backend) Board(limit int) ([]core.BoardTicket, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	ctx := context.Background()
+	rows, err := b.pool.Query(ctx, `
+		SELECT id, question_category, status, responder_kind, responder_display, reaction, created_at,
+			COALESCE((SELECT SUM(char_length(text)) FROM fragments f WHERE f.request_id = r.id), 0)
+		FROM requests r
+		WHERE board_eligible = TRUE AND status <> 'abandoned'
+		ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tickets []core.BoardTicket
+	for rows.Next() {
+		var t core.BoardTicket
+		var status, reaction string
+		if err := rows.Scan(&t.RequestID, &t.Category, &status, &t.ResponderKind, &t.ResponderDisplay, &reaction, &t.CreatedAt, &t.AnswerLength); err != nil {
+			return nil, err
+		}
+		t.Status = core.RequestStatus(status)
+		t.Reaction = core.Reaction(reaction)
+		tickets = append(tickets, t)
+	}
+	return tickets, rows.Err()
 }
 
 func (b *Backend) fragmentCount(ctx context.Context, requestID string) (int, error) {

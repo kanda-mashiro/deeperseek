@@ -41,6 +41,8 @@ type Backend interface {
 
 	React(token, requestID string, reaction Reaction) (Balance, error)
 	LedgerForUser(token string) ([]PointEntry, Balance, error)
+
+	Board(limit int) ([]BoardTicket, error)
 }
 
 var _ Backend = (*Service)(nil)
