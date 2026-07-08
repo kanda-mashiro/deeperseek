@@ -47,6 +47,17 @@ type AssignedRequest = {
   created_at: string;
 };
 
+type BoardTicket = {
+  request_id: string;
+  category: string;
+  status: string;
+  responder_kind: string;
+  responder_display: string;
+  reaction: string;
+  answer_length: number;
+  created_at: string;
+};
+
 type ChatTurn = {
   id: string;
   role: "user" | "assistant";
@@ -638,6 +649,7 @@ function WaitingLine() {
 }
 
 function AnswerPanel({ auth }: { auth: AuthResult }) {
+  const [tab, setTab] = useState<"work" | "board">("work");
   const [connected, setConnected] = useState(false);
   const [assignment, setAssignment] = useState<AssignedRequest | null>(null);
   const [committedFrags, setCommittedFrags] = useState<string[]>([]);
@@ -801,6 +813,30 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
         </div>
       </div>
 
+      <div className="answer-tabs">
+        <button
+          className={tab === "work" ? "seg active" : "seg"}
+          data-testid="answer-tab-work"
+          onClick={() => setTab("work")}
+          type="button"
+        >
+          <Wifi size={15} />
+          接锅台
+        </button>
+        <button
+          className={tab === "board" ? "seg active" : "seg"}
+          data-testid="answer-tab-board"
+          onClick={() => setTab("board")}
+          type="button"
+        >
+          <Sparkles size={15} />
+          围观现场
+        </button>
+      </div>
+
+      {tab === "board" && <SpectatorBoard />}
+
+      {tab === "work" && (
       <article className="answer-thread-pane">
         <div className="pane-head">
           <h3>对话现场</h3>
@@ -869,7 +905,155 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
         {pendingCommit && <p className="muted">1 秒没删，这段话正在焊死成“智能”。</p>}
         {error && <p className="error">{error}</p>}
       </article>
+      )}
     </section>
+  );
+}
+
+function KindBadge({ kind }: { kind: string }) {
+  const meta: Record<string, { label: string; cls: string }> = {
+    human: { label: "真人", cls: "kind-human" },
+    ai_persona: { label: "AI 伪人", cls: "kind-persona" },
+    fallback: { label: "回退助手", cls: "kind-fallback" }
+  };
+  const k = meta[kind];
+  if (!k) return null;
+  return (
+    <span className={`kind-badge ${k.cls}`} data-testid="kind-badge">
+      {k.label}
+    </span>
+  );
+}
+
+function boardStatusLabel(status: string) {
+  const map: Record<string, string> = {
+    queued: "排队中",
+    assigned: "已接单",
+    typing: "打字中",
+    streaming: "回答中",
+    completed: "已完成",
+    timeout_completed: "超时收工"
+  };
+  return map[status] ?? status;
+}
+
+function SpectatorBoard() {
+  const [tickets, setTickets] = useState<BoardTicket[]>([]);
+  const [watching, setWatching] = useState<BoardTicket | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api<{ tickets: BoardTicket[] }>("/api/board")
+        .then((r) => {
+          if (alive) setTickets(r.tickets ?? []);
+        })
+        .catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  if (watching) {
+    return <BoardWatch ticket={watching} onClose={() => setWatching(null)} />;
+  }
+
+  return (
+    <article className="board-pane">
+      <div className="pane-head">
+        <h3>谁在假装 AI</h3>
+        <span className="ticket-meta">{tickets.length} 单在场</span>
+      </div>
+      {tickets.length === 0 ? (
+        <p className="muted answer-empty">暂时没有可围观的单子，大家都很闲。</p>
+      ) : (
+        <div className="board-list">
+          {tickets.map((t) => (
+            <button
+              className="board-ticket"
+              data-testid="board-ticket"
+              key={t.request_id}
+              onClick={() => setWatching(t)}
+              type="button"
+            >
+              <div className="ticket-top">
+                <span className="ticket-cat">{t.category}</span>
+                <KindBadge kind={t.responder_kind} />
+              </div>
+              <div className="ticket-meta-row">
+                <span>{boardStatusLabel(t.status)}</span>
+                <span>{t.responder_display || "待接单"}</span>
+                <span>{t.answer_length.toLocaleString()} 字</span>
+                {t.reaction === "like" && <span>👍</span>}
+                {t.reaction === "dislike" && <span>👎</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function BoardWatch({ ticket, onClose }: { ticket: BoardTicket; onClose: () => void }) {
+  const [content, setContent] = useState("");
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    setContent("");
+    setDone(false);
+    const es = new EventSource(`/api/board/${ticket.request_id}/watch`);
+    es.onmessage = (event) => {
+      if (event.data === "[DONE]") {
+        setDone(true);
+        es.close();
+        return;
+      }
+      try {
+        const chunk = JSON.parse(event.data);
+        const delta = chunk.choices?.[0]?.delta?.content ?? "";
+        if (delta) setContent((value) => value + delta);
+        if (chunk.choices?.[0]?.finish_reason) setDone(true);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      setDone(true);
+    };
+    return () => es.close();
+  }, [ticket.request_id]);
+
+  return (
+    <article className="board-pane board-watch" data-testid="board-watch">
+      <div className="pane-head board-watch-head">
+        <span className="ticket-cat">{ticket.category}</span>
+        <KindBadge kind={ticket.responder_kind} />
+        <span className="ticket-meta">{ticket.responder_display || "待接单"}</span>
+        <button className="ghost board-back" onClick={onClose} type="button">
+          <X size={16} />
+          返回列表
+        </button>
+      </div>
+      <div className="watch-body">
+        {content ? (
+          <span data-testid="board-watch-answer">{content}</span>
+        ) : (
+          <span className="muted">这位还没开口，围观群众请稍候。</span>
+        )}
+        {!done && content && (
+          <span className="typing-mark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+        )}
+      </div>
+    </article>
   );
 }
 

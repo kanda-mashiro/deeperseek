@@ -99,6 +99,30 @@ test("capture design audit baseline", async ({ browser }) => {
     await responder360.context().close();
   }
 
+  // spectator board (dark + light)
+  for (const scheme of ["dark", "light"] as const) {
+    const requester = await newUserPage(browser, viewports.w1024, scheme);
+    const responder = await newUserPage(browser, viewports.w1024, scheme);
+    const spectator = await newUserPage(browser, viewports.w1024, scheme);
+    await responder.getByTestId("mode-answer").click();
+    await responder.getByTestId("answer-online").click();
+    await requester.getByTestId("request-prompt").fill("为什么外星人不来地球开分店？帮我一本正经地胡说。");
+    await requester.getByTestId("request-send").click();
+    await expect(responder.getByTestId("answer-incoming")).toContainText("外星人");
+    await responder.getByTestId("answer-draft").fill("因为地球的差评太多，米其林指南都不敢来。");
+    await expect(responder.getByTestId("answer-committed")).toContainText("米其林", { timeout: 5_000 });
+    await spectator.getByTestId("mode-answer").click();
+    await spectator.getByTestId("answer-tab-board").click();
+    await expect(spectator.getByTestId("board-ticket").first()).toBeVisible({ timeout: 8_000 });
+    await shot(spectator, `board-list-w1024-${scheme}`);
+    await spectator.getByTestId("board-ticket").first().click();
+    await expect(spectator.getByTestId("board-watch")).toBeVisible();
+    await shot(spectator, `board-watch-w1024-${scheme}`);
+    await requester.context().close();
+    await responder.context().close();
+    await spectator.context().close();
+  }
+
   // hover states
   {
     const page = await newUserPage(browser, viewports.w1024, "light");
