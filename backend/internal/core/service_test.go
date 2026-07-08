@@ -349,6 +349,26 @@ func TestCancelBeforeFirstFragmentReleasesHold(t *testing.T) {
 	}
 }
 
+func TestResponderSourceTags(t *testing.T) {
+	svc, sessionID := assignedService(t)
+	reqID := svc.activeByRes[sessionID]
+	snap, _, _ := svc.RequestSnapshot(reqID)
+	if snap.RequesterKind != KindHuman || snap.ResponderKind != KindHuman || snap.ResponderDisplay != "Bob" {
+		t.Fatalf("expected human tags, got reqKind=%q respKind=%q display=%q", snap.RequesterKind, snap.ResponderKind, snap.ResponderDisplay)
+	}
+
+	svc2 := NewService()
+	requester := svc2.GuestSession("")
+	req, _ := svc2.CreateRequest(context.Background(), requester.Token, "m", []Message{{Role: "user", Content: "q"}}, 0)
+	if _, _, ok := svc2.AcquireFallbackAssignment(req.ID); !ok {
+		t.Fatal("fallback acquire")
+	}
+	snap2, _, _ := svc2.RequestSnapshot(req.ID)
+	if snap2.ResponderKind != KindFallback {
+		t.Fatalf("expected fallback kind, got %q", snap2.ResponderKind)
+	}
+}
+
 func TestInputAndOutputLimits(t *testing.T) {
 	svc := NewService()
 	requester, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")

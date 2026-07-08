@@ -16,7 +16,8 @@ const notTerminalSQL = `status NOT IN ('completed', 'timeout_completed', 'abando
 
 const requestCols = `id, requester_id, requester_session_id, requester_guest, messages, model,
 	status, responder_session_id, responder_user_id, responder_guest, frozen_points,
-	question_charged, output_limit, finish_reason, reaction, created_at, updated_at, completed_at`
+	question_charged, output_limit, finish_reason, reaction, created_at, updated_at, completed_at,
+	requester_kind, responder_kind, responder_display`
 
 func isTerminalStatus(status core.RequestStatus) bool {
 	return status == core.StatusCompleted || status == core.StatusTimeoutCompleted || status == core.StatusAbandoned
@@ -31,6 +32,7 @@ func scanRequest(row pgx.Row) (*core.Request, error) {
 		&r.ID, &r.RequesterID, &r.RequesterSessionID, &r.RequesterGuest, &msgs, &r.Model,
 		&status, &r.ResponderSessionID, &r.ResponderUserID, &r.ResponderGuest, &r.FrozenPoints,
 		&r.QuestionCharged, &r.OutputLimit, &finish, &reaction, &r.CreatedAt, &r.UpdatedAt, &completedAt,
+		&r.RequesterKind, &r.ResponderKind, &r.ResponderDisplay,
 	); err != nil {
 		return nil, err
 	}

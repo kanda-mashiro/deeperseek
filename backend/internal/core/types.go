@@ -37,6 +37,14 @@ const (
 	ReactionDislike Reaction = "dislike"
 )
 
+// Kind labels who is behind a request or an answer, so the frontend can show it
+// honestly: a real human, an AI persona posing as a human, or the fallback AI.
+const (
+	KindHuman     = "human"
+	KindAIPersona = "ai_persona"
+	KindFallback  = "fallback"
+)
+
 type FinishReason string
 
 const (
@@ -72,12 +80,15 @@ type Request struct {
 	RequesterID        string
 	RequesterSessionID string
 	RequesterGuest     bool
+	RequesterKind      string
 	Messages           []Message
 	Model              string
 	Status             RequestStatus
 	ResponderSessionID string
 	ResponderUserID    string
 	ResponderGuest     bool
+	ResponderKind      string
+	ResponderDisplay   string
 	FrozenPoints       int
 	QuestionCharged    bool
 	OutputLimit        int

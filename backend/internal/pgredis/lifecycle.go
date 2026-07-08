@@ -80,8 +80,8 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 
 	return &core.Request{
 		ID: reqID, RequesterID: sess.UserID, RequesterSessionID: sess.ID, RequesterGuest: sess.Guest,
-		Messages: messages, Model: model, Status: core.StatusQueued, FrozenPoints: frozen,
-		OutputLimit: maxOutputChars, Reaction: core.ReactionNone, CreatedAt: now, UpdatedAt: now,
+		RequesterKind: core.KindHuman, Messages: messages, Model: model, Status: core.StatusQueued,
+		FrozenPoints: frozen, OutputLimit: maxOutputChars, Reaction: core.ReactionNone, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -259,7 +259,8 @@ func (b *Backend) AcquireFallbackAssignment(requestID string) (string, core.Assi
 	}
 	sessionID := "fallback_" + requestID
 	if _, err := tx.Exec(ctx,
-		`UPDATE requests SET status = 'assigned', responder_session_id = $1, responder_user_id = '', responder_guest = TRUE, updated_at = $2 WHERE id = $3`,
+		`UPDATE requests SET status = 'assigned', responder_session_id = $1, responder_user_id = '', responder_guest = TRUE,
+			responder_kind = 'fallback', responder_display = '回退助手', updated_at = $2 WHERE id = $3`,
 		sessionID, now, req.ID); err != nil {
 		return "", core.AssignedRequest{}, false
 	}
@@ -558,7 +559,8 @@ func (b *Backend) CancelBeforeFirstFragment(requestID string) bool {
 		return false
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE requests SET status = 'abandoned', responder_session_id = '', responder_user_id = '', responder_guest = FALSE, frozen_points = 0, updated_at = $2 WHERE id = $1`,
+		`UPDATE requests SET status = 'abandoned', responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
+			responder_kind = '', responder_display = '', frozen_points = 0, updated_at = $2 WHERE id = $1`,
 		req.ID, now); err != nil {
 		return false
 	}
@@ -663,9 +665,9 @@ func (b *Backend) drainAssignments(ctx context.Context) {
 }
 
 func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
-	var userID string
+	var userID, nickname string
 	var guest bool
-	err := b.pool.QueryRow(ctx, `SELECT user_id, guest FROM sessions WHERE id = $1`, sid).Scan(&userID, &guest)
+	err := b.pool.QueryRow(ctx, `SELECT user_id, guest, nickname FROM sessions WHERE id = $1`, sid).Scan(&userID, &guest, &nickname)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = b.releaseLock(ctx, reqID)
 		_ = b.enqueueRequest(ctx, reqID)
@@ -676,9 +678,10 @@ func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
 	}
 	now := b.clock()
 	tag, err := b.pool.Exec(ctx,
-		`UPDATE requests SET status = 'assigned', responder_session_id = $1, responder_user_id = $2, responder_guest = $3, updated_at = $4
-		 WHERE id = $5 AND status = 'queued'`,
-		sid, userID, guest, now, reqID)
+		`UPDATE requests SET status = 'assigned', responder_session_id = $1, responder_user_id = $2, responder_guest = $3,
+			responder_kind = 'human', responder_display = $4, updated_at = $5
+		 WHERE id = $6 AND status = 'queued'`,
+		sid, userID, guest, nickname, now, reqID)
 	if err != nil {
 		return
 	}
@@ -739,7 +742,8 @@ func (b *Backend) completeRequestTx(ctx context.Context, tx pgx.Tx, req *core.Re
 
 func requeueRequestTx(ctx context.Context, tx pgx.Tx, reqID string, now time.Time) error {
 	_, err := tx.Exec(ctx,
-		`UPDATE requests SET status = 'queued', responder_session_id = '', responder_user_id = '', responder_guest = FALSE, updated_at = $2
+		`UPDATE requests SET status = 'queued', responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
+			responder_kind = '', responder_display = '', updated_at = $2
 		 WHERE id = $1 AND `+notTerminalSQL,
 		reqID, now)
 	return err

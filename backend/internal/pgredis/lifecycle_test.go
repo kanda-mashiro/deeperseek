@@ -84,6 +84,9 @@ func TestCrossInstanceRequestAnswerFlow(t *testing.T) {
 	if err != nil || snap.Status != core.StatusCompleted || text != "because rayleigh scattering" {
 		t.Fatalf("snapshot after finish: status=%v text=%q err=%v", snap.Status, text, err)
 	}
+	if snap.ResponderKind != core.KindHuman || snap.ResponderDisplay != "worker" || snap.RequesterKind != core.KindHuman {
+		t.Fatalf("source tags: respKind=%q display=%q reqKind=%q", snap.ResponderKind, snap.ResponderDisplay, snap.RequesterKind)
+	}
 }
 
 func TestFreezeChargeAndInsufficientPoints(t *testing.T) {

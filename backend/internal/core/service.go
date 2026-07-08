@@ -180,6 +180,7 @@ func (s *Service) CreateRequest(ctx context.Context, token string, model string,
 		RequesterID:        session.UserID,
 		RequesterSessionID: session.ID,
 		RequesterGuest:     session.Guest,
+		RequesterKind:      KindHuman,
 		Messages:           append([]Message(nil), messages...),
 		Model:              model,
 		Status:             StatusQueued,
@@ -264,6 +265,8 @@ func (s *Service) AcquireFallbackAssignment(requestID string) (string, AssignedR
 	req.ResponderSessionID = sessionID
 	req.ResponderUserID = ""
 	req.ResponderGuest = true
+	req.ResponderKind = KindFallback
+	req.ResponderDisplay = "回退助手"
 	req.UpdatedAt = now
 	s.activeByRes[sessionID] = requestID
 
@@ -632,6 +635,8 @@ func (s *Service) tryAssignLocked(now time.Time) {
 		req.ResponderSessionID = responderID
 		req.ResponderGuest = session.Guest
 		req.ResponderUserID = session.UserID
+		req.ResponderKind = KindHuman
+		req.ResponderDisplay = session.Nickname
 		req.UpdatedAt = now
 		s.activeByRes[responderID] = requestID
 
@@ -653,6 +658,8 @@ func (s *Service) requeueLocked(req *Request, now time.Time) {
 	req.ResponderSessionID = ""
 	req.ResponderUserID = ""
 	req.ResponderGuest = false
+	req.ResponderKind = ""
+	req.ResponderDisplay = ""
 	req.Status = StatusQueued
 	req.UpdatedAt = now
 	s.queue = append(s.queue, req.ID)
