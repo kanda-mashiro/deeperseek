@@ -58,6 +58,20 @@ type BoardTicket = {
   created_at: string;
 };
 
+type Conversation = {
+  id: string;
+  title: string;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type ConversationMessage = {
+  id: string;
+  role: string;
+  content: string;
+};
+
 type ChatTurn = {
   id: string;
   role: "user" | "assistant";
@@ -74,6 +88,7 @@ type ResolvedTheme = "light" | "dark";
 
 const tokenStorageKey = "deeperseek_token";
 const themeStorageKey = "deeperseek_theme";
+const convStorageKey = "deeperseek_conversation";
 const inputLimit = 100000;
 const outputLimit = 128000;
 
@@ -407,8 +422,62 @@ function AuthPanel({
 function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthResult) => void }) {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<ChatTurn[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConv, setActiveConv] = useState<string>(() => window.localStorage.getItem(convStorageKey) ?? "");
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+
+  const loadConversations = () =>
+    api<{ conversations: Conversation[] }>("/api/conversations", { token: auth.token })
+      .then((r) => setConversations(r.conversations ?? []))
+      .catch(() => undefined);
+
+  const loadTranscript = (id: string) =>
+    api<{ messages: ConversationMessage[] }>(`/api/conversations/${id}`, { token: auth.token })
+      .then((r) =>
+        setMessages(
+          r.messages.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content, status: "done" as const, reaction: "none" as const }))
+        )
+      )
+      .catch(() => {
+        setActiveConv("");
+        window.localStorage.removeItem(convStorageKey);
+        setMessages([]);
+      });
+
+  const rememberActive = (id: string) => {
+    setActiveConv(id);
+    if (id) {
+      window.localStorage.setItem(convStorageKey, id);
+    } else {
+      window.localStorage.removeItem(convStorageKey);
+    }
+  };
+
+  // load the sidebar + restore the active transcript when the session changes
+  useEffect(() => {
+    loadConversations();
+    const stored = window.localStorage.getItem(convStorageKey) ?? "";
+    if (stored) {
+      loadTranscript(stored);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.token]);
+
+  const switchConversation = (id: string) => {
+    if (id === activeConv) return;
+    abortRef.current?.abort();
+    rememberActive(id);
+    loadTranscript(id);
+  };
+
+  const newChat = () => {
+    abortRef.current?.abort();
+    rememberActive("");
+    setMessages([]);
+    setPrompt("");
+    setError("");
+  };
 
   const activeAssistant = messages.find(
     (message) => message.role === "assistant" && (message.status === "waiting" || message.status === "streaming")
@@ -434,6 +503,25 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
       { id: userID, role: "user", content: question },
       { id: assistantID, role: "assistant", content: "", status: "waiting", reaction: "none" }
     ]);
+
+    // bind to a conversation so the transcript survives a refresh; create one
+    // lazily on the first message, titled from the question
+    let convID = activeConv;
+    if (!convID) {
+      try {
+        const created = await api<Conversation>("/api/conversations", {
+          method: "POST",
+          token: auth.token,
+          body: { title: question.slice(0, 40) }
+        });
+        convID = created.id;
+        rememberActive(convID);
+        void loadConversations();
+      } catch {
+        // proceed unbound rather than block the ask
+      }
+    }
+
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -447,7 +535,8 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
           model: "deeperseek-human",
           stream: true,
           messages: [...priorMessages, { role: "user", content: question }],
-          max_tokens: outputLimit
+          max_tokens: outputLimit,
+          conversation_id: convID || undefined
         }),
         signal: controller.signal
       });
@@ -461,6 +550,7 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
             value.map((message) => (message.id === assistantID ? { ...message, status: "done" } : message))
           );
           refreshMe(auth.token).then(onAuth).catch(() => undefined);
+          void loadConversations();
           return;
         }
         const chunk = JSON.parse(event);
@@ -527,7 +617,32 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
   };
 
   return (
-    <section className="request-workspace">
+    <section className="request-workspace with-sidebar">
+      <aside className="conv-sidebar">
+        <button className="primary new-chat" data-testid="new-chat" onClick={newChat} type="button">
+          <Sparkles size={16} />
+          新对话
+        </button>
+        <div className="conv-list">
+          {conversations.length === 0 ? (
+            <p className="muted conv-empty">还没有对话，问一句就开张。</p>
+          ) : (
+            conversations.map((c) => (
+              <button
+                key={c.id}
+                className={c.id === activeConv ? "conv-item active" : "conv-item"}
+                data-testid="conv-item"
+                onClick={() => switchConversation(c.id)}
+                title={c.title}
+                type="button"
+              >
+                {c.title}
+              </button>
+            ))
+          )}
+        </div>
+        {auth.user.guest && <p className="conv-guest-note">游客对话仅存本浏览器 · 注册即可永久保存</p>}
+      </aside>
       <div className={messages.length === 0 ? "chat-pane request-chat-pane empty-chat" : "chat-pane request-chat-pane"}>
         <div className="conversation">
           {messages.length === 0 && (

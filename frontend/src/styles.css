@@ -517,6 +517,115 @@ textarea:focus {
   animation: surface-in 320ms ease both;
 }
 
+.request-workspace.with-sidebar {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.with-sidebar .request-chat-pane {
+  width: 100%;
+  margin: 0;
+}
+
+.conv-sidebar {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+  max-height: calc(100vh - 152px);
+}
+
+.new-chat {
+  width: 100%;
+}
+
+.conv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.conv-item {
+  text-align: left;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.conv-item:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.conv-item.active {
+  background: var(--accent-soft);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.conv-empty,
+.conv-guest-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.conv-guest-note {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+@media (max-width: 820px) {
+  .request-workspace.with-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .conv-sidebar {
+    position: static;
+    max-height: none;
+    flex-direction: column;
+  }
+
+  .conv-list {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .conv-item {
+    flex: 0 0 auto;
+    max-width: 160px;
+  }
+
+  .conv-guest-note {
+    display: none;
+  }
+}
+
 .chat-pane,
 .composer,
 .operator-panel,

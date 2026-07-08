@@ -123,6 +123,24 @@ test("capture design audit baseline", async ({ browser }) => {
     await spectator.context().close();
   }
 
+  // conversation sidebar with a saved chat
+  for (const scheme of ["dark", "light"] as const) {
+    const requester = await newUserPage(browser, viewports.w1024, scheme);
+    const responder = await newUserPage(browser, viewports.w1024, scheme);
+    await responder.getByTestId("mode-answer").click();
+    await responder.getByTestId("answer-online").click();
+    await requester.getByTestId("request-prompt").fill("帮我写一句显得很忙的自动回复");
+    await requester.getByTestId("request-send").click();
+    await expect(responder.getByTestId("answer-incoming")).toContainText("自动回复");
+    await responder.getByTestId("answer-draft").fill("我在，只是热情在忙线中，请稍后重试。");
+    await expect(responder.getByTestId("answer-committed")).toContainText("热情", { timeout: 5_000 });
+    await responder.getByTestId("answer-finish").click();
+    await expect(requester.getByTestId("request-answer")).toContainText("热情");
+    await shot(requester, `request-sidebar-w1024-${scheme}`);
+    await requester.context().close();
+    await responder.context().close();
+  }
+
   // hover states
   {
     const page = await newUserPage(browser, viewports.w1024, "light");
