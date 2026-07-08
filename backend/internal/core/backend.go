@@ -43,6 +43,14 @@ type Backend interface {
 	LedgerForUser(token string) ([]PointEntry, Balance, error)
 
 	Board(limit int) ([]BoardTicket, error)
+
+	CreateConversation(token, title string) (Conversation, error)
+	ListConversations(token string) ([]Conversation, error)
+	GetConversation(token, id string) (Conversation, []ConversationMessage, error)
+	RenameConversation(token, id, title string) error
+	SetConversationArchived(token, id string, archived bool) error
+	DeleteConversation(token, id string) error
+	AppendConversationMessage(token, conversationID, role, content, sourceKind, requestID string) (ConversationMessage, error)
 }
 
 var _ Backend = (*Service)(nil)

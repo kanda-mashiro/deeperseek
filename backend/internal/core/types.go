@@ -100,6 +100,26 @@ type Request struct {
 	CompletedAt        time.Time
 }
 
+type Conversation struct {
+	ID             string    `json:"id"`
+	OwnerUserID    string    `json:"-"`
+	GuestSessionID string    `json:"-"`
+	Title          string    `json:"title"`
+	Archived       bool      `json:"archived"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type ConversationMessage struct {
+	ID         string    `json:"id"`
+	Seq        int       `json:"seq"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	SourceKind string    `json:"source_kind,omitempty"`
+	RequestID  string    `json:"request_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type Fragment struct {
 	ID                 string
 	RequestID          string

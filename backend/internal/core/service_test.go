@@ -392,6 +392,51 @@ func TestBoardListsGuestRequestsNotRegistered(t *testing.T) {
 	}
 }
 
+func TestConversationsLifecycleAndOwnership(t *testing.T) {
+	svc := NewService()
+	owner := svc.GuestSession("")
+	other := svc.GuestSession("")
+
+	conv, err := svc.CreateConversation(owner.Token, "我的对话")
+	if err != nil || conv.Title != "我的对话" {
+		t.Fatalf("create: %+v err=%v", conv, err)
+	}
+	if _, err := svc.AppendConversationMessage(owner.Token, conv.ID, "user", "hi", "", ""); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := svc.AppendConversationMessage(owner.Token, conv.ID, "assistant", "yo", KindHuman, "req1"); err != nil {
+		t.Fatalf("append assistant: %v", err)
+	}
+
+	_, msgs, err := svc.GetConversation(owner.Token, conv.ID)
+	if err != nil || len(msgs) != 2 || msgs[0].Content != "hi" || msgs[1].Seq != 2 {
+		t.Fatalf("get: msgs=%+v err=%v", msgs, err)
+	}
+	if list, _ := svc.ListConversations(owner.Token); len(list) != 1 {
+		t.Fatalf("list should have 1, got %d", len(list))
+	}
+	// another session cannot see or touch it
+	if _, _, err := svc.GetConversation(other.Token, conv.ID); !errors.Is(err, ErrConversationNotFound) {
+		t.Fatalf("cross-owner get should fail, got %v", err)
+	}
+	if err := svc.RenameConversation(other.Token, conv.ID, "劫持"); !errors.Is(err, ErrConversationNotFound) {
+		t.Fatalf("cross-owner rename should fail, got %v", err)
+	}
+
+	if err := svc.RenameConversation(owner.Token, conv.ID, "改名"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := svc.SetConversationArchived(owner.Token, conv.ID, true); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if err := svc.DeleteConversation(owner.Token, conv.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if list, _ := svc.ListConversations(owner.Token); len(list) != 0 {
+		t.Fatalf("list should be empty after delete, got %d", len(list))
+	}
+}
+
 func TestInputAndOutputLimits(t *testing.T) {
 	svc := NewService()
 	requester, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")

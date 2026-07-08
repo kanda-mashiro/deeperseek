@@ -30,6 +30,7 @@ var (
 	ErrReactionNotAllowed   = errors.New("reaction is not allowed")
 	ErrRequestNotFound      = errors.New("request not found")
 	ErrResponderUnavailable = errors.New("responder unavailable")
+	ErrConversationNotFound = errors.New("conversation not found")
 )
 
 type Service struct {
@@ -49,6 +50,9 @@ type Service struct {
 	available   []string
 	responders  map[string]chan AssignedRequest
 	subscribers map[string]map[chan StreamEvent]struct{}
+
+	conversations map[string]*Conversation
+	convMessages  map[string][]ConversationMessage
 }
 
 func NewService() *Service {
@@ -62,6 +66,8 @@ func NewService() *Service {
 		activeByRes:    make(map[string]string),
 		responders:     make(map[string]chan AssignedRequest),
 		subscribers:    make(map[string]map[chan StreamEvent]struct{}),
+		conversations:  make(map[string]*Conversation),
+		convMessages:   make(map[string][]ConversationMessage),
 	}
 }
 
