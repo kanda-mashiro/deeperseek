@@ -53,6 +53,17 @@ so local dev, `go test`, and the current single pod keep working with no infra.
 - `Service` orchestrates the two; **httpapi keeps calling the same exported
   Service methods unchanged.**
 
+**Phase 0 refinement (as implemented):** the Store/Coordinator split is unified
+into a single `core.Backend` interface at the httpapi seam, because several
+operations (AppendFragment persist+publish, AssignRequest persist+deliver) must
+stay atomic in the memory path — a two-object, two-lock split would change
+observable behavior. The durable-vs-realtime separation therefore lives *inside*
+the Phase-1 pgredis implementation, not as two Service-level interfaces. Phase 0
+added only `backend.go` (the interface, satisfied by the existing in-memory
+`Service`) and switched httpapi from `*core.Service` to `core.Backend`;
+`service.go` and every test are byte-for-byte unchanged, so behavior-neutrality
+is proven by the unchanged suite passing.
+
 ### 2.2 Backend selection (contradiction resolved: fail-fast on partial config)
 
 ```

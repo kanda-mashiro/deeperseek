@@ -18,13 +18,13 @@ import (
 )
 
 type Server struct {
-	svc       *core.Service
+	svc       core.Backend
 	upgrader  websocket.Upgrader
 	fallback  FallbackConfig
 	staticDir string
 }
 
-func NewServer(svc *core.Service) *Server {
+func NewServer(svc core.Backend) *Server {
 	return NewServerWithOptions(svc, ServerOptions{})
 }
 
@@ -33,7 +33,7 @@ type ServerOptions struct {
 	StaticDir string
 }
 
-func NewServerWithOptions(svc *core.Service, options ServerOptions) *Server {
+func NewServerWithOptions(svc core.Backend, options ServerOptions) *Server {
 	fallback := options.Fallback.withDefaults()
 	return &Server{
 		svc:       svc,
