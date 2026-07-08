@@ -18,7 +18,11 @@ import (
 // default `go test ./...` and CI stay on the memory path with zero infra; the
 // first run fetches the Postgres binary and needs network.
 
-var testBackend *Backend
+var (
+	testBackend   *Backend
+	testPGURL     string
+	testRedisAddr string
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("DEEPERSEEK_IT") == "" {
@@ -33,9 +37,9 @@ func TestMain(m *testing.M) {
 		_ = pg.Stop()
 		panic("start miniredis: " + err.Error())
 	}
-	b, err := New(context.Background(),
-		"postgres://postgres:postgres@localhost:9876/postgres?sslmode=disable",
-		"redis://"+mr.Addr())
+	testPGURL = "postgres://postgres:postgres@localhost:9876/postgres?sslmode=disable"
+	testRedisAddr = mr.Addr()
+	b, err := New(context.Background(), testPGURL, "redis://"+testRedisAddr)
 	if err != nil {
 		mr.Close()
 		_ = pg.Stop()
@@ -49,6 +53,18 @@ func TestMain(m *testing.M) {
 	mr.Close()
 	_ = pg.Stop()
 	os.Exit(code)
+}
+
+// secondBackend connects another Backend instance to the same Postgres + Redis,
+// modeling a second replica for cross-instance tests.
+func secondBackend(t *testing.T) *Backend {
+	t.Helper()
+	b, err := New(context.Background(), testPGURL, "redis://"+testRedisAddr)
+	if err != nil {
+		t.Fatalf("second backend: %v", err)
+	}
+	t.Cleanup(b.Close)
+	return b
 }
 
 // backendForTest returns the shared backend with a clean slate, or skips.

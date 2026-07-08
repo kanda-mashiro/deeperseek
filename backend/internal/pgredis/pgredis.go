@@ -8,6 +8,7 @@ package pgredis
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,6 +22,10 @@ type Backend struct {
 	pool  *pgxpool.Pool
 	rdb   *redis.Client
 	clock func() time.Time
+
+	mu         sync.Mutex
+	responders map[string]*responderConn
+	bgCancel   context.CancelFunc
 }
 
 // New connects to Postgres and Redis, verifies both, and applies migrations.
@@ -45,6 +50,11 @@ func New(ctx context.Context, databaseURL, redisURL string) (*Backend, error) {
 		b.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+
+	b.responders = make(map[string]*responderConn)
+	bgCtx, cancel := context.WithCancel(context.Background())
+	b.bgCancel = cancel
+	go b.assignTicker(bgCtx)
 	return b, nil
 }
 
@@ -63,6 +73,15 @@ func (b *Backend) Ping(ctx context.Context) error {
 }
 
 func (b *Backend) Close() {
+	if b.bgCancel != nil {
+		b.bgCancel()
+	}
+	b.mu.Lock()
+	for _, rc := range b.responders {
+		rc.stop()
+	}
+	b.responders = nil
+	b.mu.Unlock()
 	if b.pool != nil {
 		b.pool.Close()
 	}
