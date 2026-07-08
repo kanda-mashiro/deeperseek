@@ -47,13 +47,14 @@ func NewServerWithOptions(svc *core.Service, options ServerOptions) *Server {
 
 func DefaultFallbackConfigFromEnv() FallbackConfig {
 	return FallbackConfig{
-		Enabled:       os.Getenv("DEEPERSEEK_FALLBACK_API_KEY") != "",
-		BaseURL:       os.Getenv("DEEPERSEEK_FALLBACK_BASE_URL"),
-		APIKey:        os.Getenv("DEEPERSEEK_FALLBACK_API_KEY"),
-		Model:         os.Getenv("DEEPERSEEK_FALLBACK_MODEL"),
-		Delay:         parseFallbackDelay(os.Getenv("DEEPERSEEK_FALLBACK_DELAY")),
-		ChunkDelay:    parseFallbackDelay(os.Getenv("DEEPERSEEK_FALLBACK_CHUNK_DELAY")),
-		MaxChunkRunes: parseFallbackMaxChunkRunes(os.Getenv("DEEPERSEEK_FALLBACK_MAX_CHUNK_RUNES")),
+		Enabled:        os.Getenv("DEEPERSEEK_FALLBACK_API_KEY") != "",
+		BaseURL:        os.Getenv("DEEPERSEEK_FALLBACK_BASE_URL"),
+		APIKey:         os.Getenv("DEEPERSEEK_FALLBACK_API_KEY"),
+		Model:          os.Getenv("DEEPERSEEK_FALLBACK_MODEL"),
+		Delay:          parseFallbackDelay(os.Getenv("DEEPERSEEK_FALLBACK_DELAY")),
+		ChunkDelay:     parseFallbackDelay(os.Getenv("DEEPERSEEK_FALLBACK_CHUNK_DELAY")),
+		MaxChunkRunes:  parseFallbackMaxChunkRunes(os.Getenv("DEEPERSEEK_FALLBACK_MAX_CHUNK_RUNES")),
+		MaxAnswerRunes: parseFallbackMaxChunkRunes(os.Getenv("DEEPERSEEK_FALLBACK_MAX_ANSWER_RUNES")),
 	}
 }
 

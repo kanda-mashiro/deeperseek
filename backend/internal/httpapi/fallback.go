@@ -22,17 +22,21 @@ const (
 	defaultFallbackDelay         = 10 * time.Second
 	defaultFallbackChunkDelay    = 85 * time.Millisecond
 	defaultFallbackMaxChunkRunes = 5
+	// A human-typed parody answer is never 128k chars; capping the upstream
+	// generation bounds both cost and worst-case streaming time.
+	defaultFallbackMaxAnswerRunes = 4000
 )
 
 type FallbackConfig struct {
-	Enabled       bool
-	BaseURL       string
-	APIKey        string
-	Model         string
-	Delay         time.Duration
-	ChunkDelay    time.Duration
-	MaxChunkRunes int
-	Client        *http.Client
+	Enabled        bool
+	BaseURL        string
+	APIKey         string
+	Model          string
+	Delay          time.Duration
+	ChunkDelay     time.Duration
+	MaxChunkRunes  int
+	MaxAnswerRunes int
+	Client         *http.Client
 }
 
 func (config FallbackConfig) withDefaults() FallbackConfig {
@@ -50,6 +54,9 @@ func (config FallbackConfig) withDefaults() FallbackConfig {
 	}
 	if config.MaxChunkRunes <= 0 {
 		config.MaxChunkRunes = defaultFallbackMaxChunkRunes
+	}
+	if config.MaxAnswerRunes <= 0 || config.MaxAnswerRunes > core.OutputLimitChars {
+		config.MaxAnswerRunes = defaultFallbackMaxAnswerRunes
 	}
 	if config.Client == nil {
 		config.Client = &http.Client{Timeout: 2 * time.Minute}
@@ -152,7 +159,7 @@ func (s *Server) callFallbackUpstream(assignment core.AssignedRequest, onDelta f
 		Model:     s.fallback.Model,
 		Messages:  fallbackMessages(assignment.Messages),
 		Stream:    true,
-		MaxTokens: core.OutputLimitChars,
+		MaxTokens: s.fallback.MaxAnswerRunes,
 	})
 	if err != nil {
 		return err
