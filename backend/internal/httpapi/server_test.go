@@ -167,6 +167,86 @@ func TestBoardListsAndGatesWatch(t *testing.T) {
 	}
 }
 
+func TestConversationHTTPCRUD(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServer(svc).Handler())
+	defer server.Close()
+	guest := svc.GuestSession("")
+
+	do := func(method, path, bodyStr string) *http.Response {
+		var body *strings.Reader
+		if bodyStr != "" {
+			body = strings.NewReader(bodyStr)
+		} else {
+			body = strings.NewReader("")
+		}
+		req, _ := http.NewRequest(method, server.URL+path, body)
+		req.Header.Set("Authorization", "Bearer "+guest.Token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		return resp
+	}
+
+	// no token -> 401
+	resp, _ := http.Get(server.URL + "/api/conversations")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no-token list should 401, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// create
+	resp = do(http.MethodPost, "/api/conversations", `{"title":"测试对话"}`)
+	var conv core.Conversation
+	_ = json.NewDecoder(resp.Body).Decode(&conv)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || conv.Title != "测试对话" || conv.ID == "" {
+		t.Fatalf("create: %d %+v", resp.StatusCode, conv)
+	}
+
+	// list -> 1
+	resp = do(http.MethodGet, "/api/conversations", "")
+	var list struct {
+		Conversations []core.Conversation `json:"conversations"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list.Conversations) != 1 {
+		t.Fatalf("list should have 1, got %+v", list)
+	}
+
+	// rename
+	resp = do(http.MethodPatch, "/api/conversations/"+conv.ID, `{"title":"改了"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch: %d", resp.StatusCode)
+	}
+	resp = do(http.MethodGet, "/api/conversations/"+conv.ID, "")
+	var got struct {
+		Conversation core.Conversation          `json:"conversation"`
+		Messages     []core.ConversationMessage `json:"messages"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if got.Conversation.Title != "改了" {
+		t.Fatalf("get title: %+v", got.Conversation)
+	}
+
+	// delete -> 200, then get -> 404
+	resp = do(http.MethodDelete, "/api/conversations/"+conv.ID, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	resp = do(http.MethodGet, "/api/conversations/"+conv.ID, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after delete should 404, got %d", resp.StatusCode)
+	}
+}
+
 func TestChatCompletionsStreamEmitsHumanFragments(t *testing.T) {
 	svc := core.NewService()
 	server := httptest.NewServer(NewServer(svc).Handler())

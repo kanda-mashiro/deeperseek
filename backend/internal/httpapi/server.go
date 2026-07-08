@@ -97,6 +97,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/points/ledger", s.handleLedger)
 	mux.HandleFunc("/api/board", s.handleBoard)
 	mux.HandleFunc("/api/board/", s.handleBoardRoutes)
+	mux.HandleFunc("/api/conversations", s.handleConversations)
+	mux.HandleFunc("/api/conversations/", s.handleConversationItem)
 	mux.HandleFunc("/api/answers/", s.handleAnswerRoutes)
 	mux.HandleFunc("/v1/chat/completions", s.rateLimited(s.handleChatCompletions))
 	mux.HandleFunc("/ws/answer", s.handleAnswerWebSocket)
@@ -322,6 +324,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, core.ErrAccountExists):
 		writeError(w, http.StatusConflict, "account_exists", err.Error())
 	case errors.Is(err, core.ErrRequestNotFound):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, core.ErrConversationNotFound):
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())

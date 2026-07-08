@@ -11,10 +11,11 @@ import (
 )
 
 type chatCompletionRequest struct {
-	Model     string         `json:"model"`
-	Messages  []core.Message `json:"messages"`
-	Stream    bool           `json:"stream"`
-	MaxTokens int            `json:"max_tokens"`
+	Model          string         `json:"model"`
+	Messages       []core.Message `json:"messages"`
+	Stream         bool           `json:"stream"`
+	MaxTokens      int            `json:"max_tokens"`
+	ConversationID string         `json:"conversation_id,omitempty"`
 }
 
 type chatCompletionResponse struct {
@@ -50,21 +51,41 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if body.Model == "" {
 		body.Model = "deeperseek-human"
 	}
-	req, err := s.svc.CreateRequest(r.Context(), bearerToken(r), body.Model, body.Messages, body.MaxTokens)
+	token := bearerToken(r)
+	req, err := s.svc.CreateRequest(r.Context(), token, body.Model, body.Messages, body.MaxTokens)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 	slog.Info("chat request created", "request_id", req.ID, "stream", body.Stream, "model", req.Model)
+	// bind to a conversation (best-effort): persist the new user turn now and the
+	// assistant answer on completion, so the transcript survives a refresh
+	if body.ConversationID != "" && len(body.Messages) > 0 {
+		if last := body.Messages[len(body.Messages)-1]; last.Role == "user" {
+			_, _ = s.svc.AppendConversationMessage(token, body.ConversationID, "user", last.Content, "", req.ID)
+		}
+	}
 	s.scheduleFallback(req)
 	if body.Stream {
-		s.streamChatCompletion(w, r, req)
+		s.streamChatCompletion(w, r, req, body.ConversationID, token)
 		return
 	}
-	s.blockingChatCompletion(w, r, req)
+	s.blockingChatCompletion(w, r, req, body.ConversationID, token)
 }
 
-func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, req *core.Request) {
+// persistAssistant records the finished answer into the bound conversation.
+func (s *Server) persistAssistant(convID, token, requestID string) {
+	if convID == "" {
+		return
+	}
+	snap, text, err := s.svc.RequestSnapshot(requestID)
+	if err != nil || text == "" {
+		return
+	}
+	_, _ = s.svc.AppendConversationMessage(token, convID, "assistant", text, snap.ResponderKind, requestID)
+}
+
+func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, req *core.Request, convID, token string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming_unsupported", "response writer does not support streaming")
@@ -108,13 +129,14 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 				writeSSEData(w, streamChunk(req, map[string]string{}, &reason))
 				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 				flusher.Flush()
+				s.persistAssistant(convID, token, req.ID)
 				return
 			}
 		}
 	}
 }
 
-func (s *Server) blockingChatCompletion(w http.ResponseWriter, r *http.Request, req *core.Request) {
+func (s *Server) blockingChatCompletion(w http.ResponseWriter, r *http.Request, req *core.Request, convID, token string) {
 	events, unsubscribe, err := s.svc.Subscribe(req.ID)
 	if err != nil {
 		writeServiceError(w, err)
@@ -147,6 +169,7 @@ func (s *Server) blockingChatCompletion(w http.ResponseWriter, r *http.Request, 
 						FinishReason: &finishReason,
 					}},
 				})
+				s.persistAssistant(convID, token, req.ID)
 				return
 			}
 		}
