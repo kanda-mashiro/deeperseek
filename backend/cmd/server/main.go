@@ -23,10 +23,11 @@ func main() {
 	defer cleanup()
 
 	server := httpapi.NewServerWithOptions(svc, httpapi.ServerOptions{
-		Fallback:   httpapi.DefaultFallbackConfigFromEnv(),
-		StaticDir:  os.Getenv("STATIC_DIR"),
-		RatePerMin: envInt("DEEPERSEEK_RATE_PER_MIN", 0), // 0 = disabled; set in prod
-		RateBurst:  envInt("DEEPERSEEK_RATE_BURST", 40),
+		Fallback:       httpapi.DefaultFallbackConfigFromEnv(),
+		StaticDir:      os.Getenv("STATIC_DIR"),
+		RatePerMin:     envInt("DEEPERSEEK_RATE_PER_MIN", 0), // 0 = disabled; set in prod
+		RateBurst:      envInt("DEEPERSEEK_RATE_BURST", 40),
+		TrustedProxies: envInt("DEEPERSEEK_TRUSTED_PROXIES", 1), // Traefik appends the real client IP
 	})
 	go svc.RunTimeoutSweeper(context.Background(), time.Second)
 

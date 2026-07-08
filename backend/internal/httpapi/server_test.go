@@ -84,6 +84,48 @@ func TestServerRateLimitsGuestCreation(t *testing.T) {
 	}
 }
 
+func TestClientIPTrustsRightmostHop(t *testing.T) {
+	mk := func(xff, remote string) *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, "/", nil)
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		r.RemoteAddr = remote
+		return r
+	}
+	// one trusted proxy (Traefik) appends the real peer on the right
+	if ip := clientIP(mk("spoofed, 9.9.9.9", "10.0.0.1:5000"), 1); ip != "9.9.9.9" {
+		t.Fatalf("expected rightmost trusted hop 9.9.9.9, got %q", ip)
+	}
+	// attacker-prepended fakes are ignored
+	if ip := clientIP(mk("1.1.1.1, 2.2.2.2, real", "10.0.0.1:5000"), 1); ip != "real" {
+		t.Fatalf("expected real, got %q", ip)
+	}
+	// no XFF -> RemoteAddr host
+	if ip := clientIP(mk("", "203.0.113.7:44000"), 1); ip != "203.0.113.7" {
+		t.Fatalf("expected RemoteAddr host, got %q", ip)
+	}
+	// no trusted proxy -> XFF ignored entirely
+	if ip := clientIP(mk("evil", "203.0.113.7:44000"), 0); ip != "203.0.113.7" {
+		t.Fatalf("expected XFF ignored, got %q", ip)
+	}
+}
+
+func TestWebSocketRequiresToken(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServer(svc).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/ws/answer")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without a token, got %d", resp.StatusCode)
+	}
+}
+
 func TestChatCompletionsStreamEmitsHumanFragments(t *testing.T) {
 	svc := core.NewService()
 	server := httptest.NewServer(NewServer(svc).Handler())

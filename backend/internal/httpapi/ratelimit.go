@@ -79,7 +79,7 @@ func (rl *rateLimiter) sweepLocked(now time.Time) {
 // rateLimited wraps a handler, throttling POST requests by client IP.
 func (s *Server) rateLimited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && !s.limiter.allow(clientIP(r)) {
+		if r.Method == http.MethodPost && !s.limiter.allow(clientIP(r, s.trustedHops)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "请求太频繁，稍等一下再试。")
 			return
 		}
@@ -87,9 +87,22 @@ func (s *Server) rateLimited(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
+// clientIP derives the real client IP. X-Forwarded-For is attacker-controlled on
+// the left (a client can prepend fakes); a trusted reverse proxy appends the
+// real peer on the right. So we take the trustedHops-th entry FROM THE RIGHT,
+// never the leftmost. With no proxy (trustedHops<=0) or no XFF, use RemoteAddr.
+func clientIP(r *http.Request, trustedHops int) string {
+	if trustedHops > 0 {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			idx := len(parts) - trustedHops
+			if idx < 0 {
+				idx = 0
+			}
+			if ip := strings.TrimSpace(parts[idx]); ip != "" {
+				return ip
+			}
+		}
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host

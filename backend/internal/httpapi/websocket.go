@@ -14,9 +14,12 @@ type wsInbound struct {
 }
 
 func (s *Server) handleAnswerWebSocket(w http.ResponseWriter, r *http.Request) {
-	token := bearerToken(r)
+	// Require a token (obtained via the rate-limited /api/guest or login) instead
+	// of minting a fresh unbounded guest session per anonymous socket.
+	token := bearerTokenWS(r)
 	if token == "" {
-		token = s.svc.GuestSession("Guest Operator").Token
+		writeError(w, http.StatusUnauthorized, "unauthorized", "responder token required")
+		return
 	}
 
 	sessionID, assignments, err := s.svc.RegisterResponder(token)

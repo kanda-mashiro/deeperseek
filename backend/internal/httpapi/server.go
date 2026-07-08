@@ -25,13 +25,14 @@ type pinger interface {
 }
 
 type Server struct {
-	svc       core.Backend
-	upgrader  websocket.Upgrader
-	fallback  FallbackConfig
-	staticDir string
-	mode      string
-	ready     func(context.Context) error
-	limiter   *rateLimiter
+	svc         core.Backend
+	upgrader    websocket.Upgrader
+	fallback    FallbackConfig
+	staticDir   string
+	mode        string
+	ready       func(context.Context) error
+	limiter     *rateLimiter
+	trustedHops int
 }
 
 func NewServer(svc core.Backend) *Server {
@@ -39,10 +40,11 @@ func NewServer(svc core.Backend) *Server {
 }
 
 type ServerOptions struct {
-	Fallback   FallbackConfig
-	StaticDir  string
-	RatePerMin int
-	RateBurst  int
+	Fallback       FallbackConfig
+	StaticDir      string
+	RatePerMin     int
+	RateBurst      int
+	TrustedProxies int // hops to trust in X-Forwarded-For (Traefik = 1); default 1
 }
 
 func NewServerWithOptions(svc core.Backend, options ServerOptions) *Server {
@@ -53,13 +55,18 @@ func NewServerWithOptions(svc core.Backend, options ServerOptions) *Server {
 		mode = "pgredis"
 		ready = p.Ping
 	}
+	trustedHops := options.TrustedProxies
+	if trustedHops <= 0 {
+		trustedHops = 1
+	}
 	return &Server{
-		svc:       svc,
-		fallback:  fallback,
-		staticDir: options.StaticDir,
-		mode:      mode,
-		ready:     ready,
-		limiter:   newRateLimiter(options.RatePerMin, options.RateBurst),
+		svc:         svc,
+		fallback:    fallback,
+		staticDir:   options.StaticDir,
+		mode:        mode,
+		ready:       ready,
+		limiter:     newRateLimiter(options.RatePerMin, options.RateBurst),
+		trustedHops: trustedHops,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -263,15 +270,22 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	return true
 }
 
+// bearerToken reads the token from the Authorization header only. Tokens in URLs
+// leak via proxy/access logs, so the ?token= query form is accepted solely by
+// the WebSocket handler (browsers can't set headers on a WS upgrade).
 func bearerToken(r *http.Request) string {
 	value := r.Header.Get("Authorization")
 	if strings.HasPrefix(strings.ToLower(value), "bearer ") {
 		return strings.TrimSpace(value[7:])
 	}
-	if token := r.URL.Query().Get("token"); token != "" {
-		return token
-	}
 	return ""
+}
+
+func bearerTokenWS(r *http.Request) string {
+	if t := bearerToken(r); t != "" {
+		return t
+	}
+	return r.URL.Query().Get("token")
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
