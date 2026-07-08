@@ -95,6 +95,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/guest", s.rateLimited(s.handleGuest))
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/points/ledger", s.handleLedger)
+	mux.HandleFunc("/api/board", s.handleBoard)
+	mux.HandleFunc("/api/board/", s.handleBoardRoutes)
 	mux.HandleFunc("/api/answers/", s.handleAnswerRoutes)
 	mux.HandleFunc("/v1/chat/completions", s.rateLimited(s.handleChatCompletions))
 	mux.HandleFunc("/ws/answer", s.handleAnswerWebSocket)

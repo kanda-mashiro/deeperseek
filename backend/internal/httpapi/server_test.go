@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -123,6 +124,46 @@ func TestWebSocketRequiresToken(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without a token, got %d", resp.StatusCode)
+	}
+}
+
+func TestBoardListsAndGatesWatch(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServer(svc).Handler())
+	defer server.Close()
+
+	guest := svc.GuestSession("")
+	gReq, err := svc.CreateRequest(context.Background(), guest.Token, "m", []core.Message{{Role: "user", Content: "hi"}}, 0)
+	if err != nil {
+		t.Fatalf("guest create: %v", err)
+	}
+	reg, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")
+	rReq, err := svc.CreateRequest(context.Background(), reg.Token, "m", []core.Message{{Role: "user", Content: "private"}}, 0)
+	if err != nil {
+		t.Fatalf("registered create: %v", err)
+	}
+
+	resp, err := http.Get(server.URL + "/api/board")
+	if err != nil {
+		t.Fatalf("board list: %v", err)
+	}
+	var body struct {
+		Tickets []core.BoardTicket `json:"tickets"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if len(body.Tickets) != 1 || body.Tickets[0].RequestID != gReq.ID {
+		t.Fatalf("board should list only the guest request, got %+v", body.Tickets)
+	}
+
+	// a registered (non-eligible) request must not be spectatable
+	resp2, err := http.Get(server.URL + "/api/board/" + rReq.ID + "/watch")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("watching a private request should 404, got %d", resp2.StatusCode)
 	}
 }
 
