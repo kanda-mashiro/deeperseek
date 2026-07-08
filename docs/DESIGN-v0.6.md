@@ -128,8 +128,9 @@ draft's "degrade, don't crashloop" wording, which only applies to *both-absent*.
   migrations run at boot. **Verify current pgx/go-redis APIs against docs before
   coding** (repo policy on non-builtin libraries).
 - Memory path covers all existing unit tests unchanged; pgredis path gets
-  integration tests (testcontainers or miniredis + a pgx test DB), gated so
-  CI-without-Docker stays green on the memory path.
+  integration tests against a real embedded Postgres (`fergusstrange/embedded-
+  postgres`, no Docker) + pure-Go `miniredis`, gated on `DEEPERSEEK_IT` so the
+  default `go test ./...` (and CI) stays on the memory path with zero infra.
 - **Readiness must be real in distributed mode:** split `/api/ready` (pings
   `Store` + `Coordinator` with a short timeout; NotReady drops the pod from the
   Service) from `/api/health` (liveness = process alive). Static `ok` only in
