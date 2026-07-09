@@ -64,11 +64,12 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 	msgs, _ := json.Marshal(messages)
 	reqID := newID("req")
 	category := core.QuestionCategory(messages)
+	boardEligible := sess.Guest && sess.Kind != core.KindAIPersona // real guests only; personas never on the board
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO requests (id, requester_id, requester_session_id, requester_guest, messages, model,
+		`INSERT INTO requests (id, requester_id, requester_session_id, requester_guest, requester_kind, messages, model,
 			status, frozen_points, output_limit, reaction, board_eligible, question_category, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, 'none', $9, $10, $11, $11)`,
-		reqID, sess.UserID, sess.ID, sess.Guest, msgs, model, frozen, maxOutputChars, sess.Guest, category, now); err != nil {
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, $9, 'none', $10, $11, $12, $12)`,
+		reqID, sess.UserID, sess.ID, sess.Guest, core.KindOrHuman(sess.Kind), msgs, model, frozen, maxOutputChars, boardEligible, category, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -86,7 +87,7 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 
 	return &core.Request{
 		ID: reqID, RequesterID: sess.UserID, RequesterSessionID: sess.ID, RequesterGuest: sess.Guest,
-		RequesterKind: core.KindHuman, BoardEligible: sess.Guest, Messages: messages, Model: model,
+		RequesterKind: core.KindOrHuman(sess.Kind), BoardEligible: boardEligible, Messages: messages, Model: model,
 		Status: core.StatusQueued, FrozenPoints: frozen, OutputLimit: maxOutputChars, Reaction: core.ReactionNone,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
@@ -741,9 +742,9 @@ func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
 	// restored even if ctx is cancelled: the request is popped from ds:queue but
 	// still status='queued' in PG, so any early return must re-enqueue it.
 	bg := context.Background()
-	var userID, nickname string
+	var userID, kind, nickname string
 	var guest bool
-	err := b.pool.QueryRow(ctx, `SELECT user_id, guest, nickname FROM sessions WHERE id = $1`, sid).Scan(&userID, &guest, &nickname)
+	err := b.pool.QueryRow(ctx, `SELECT user_id, guest, kind, nickname FROM sessions WHERE id = $1`, sid).Scan(&userID, &guest, &kind, &nickname)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// responder session gone: requeue the request, drop the responder
 		_ = b.releaseLock(bg, reqID)
@@ -760,9 +761,9 @@ func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
 	now := b.clock()
 	tag, err := b.pool.Exec(ctx,
 		`UPDATE requests SET status = 'assigned', responder_session_id = $1, responder_user_id = $2, responder_guest = $3,
-			responder_kind = 'human', responder_display = $4, updated_at = $5
-		 WHERE id = $6 AND status = 'queued'`,
-		sid, userID, guest, nickname, now, reqID)
+			responder_kind = $4, responder_display = $5, updated_at = $6
+		 WHERE id = $7 AND status = 'queued'`,
+		sid, userID, guest, core.KindOrHuman(kind), nickname, now, reqID)
 	if err != nil {
 		_ = b.releaseLock(bg, reqID)
 		_ = b.enqueueRequest(bg, reqID)

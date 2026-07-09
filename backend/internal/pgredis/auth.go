@@ -19,6 +19,7 @@ type session struct {
 	Token     string
 	UserID    string
 	Guest     bool
+	Kind      string
 	Nickname  string
 	CreatedAt time.Time
 }
@@ -59,7 +60,7 @@ func (b *Backend) Register(accountName, nickname, password, repeated string) (co
 		newID("pts"), userID, core.SignupGrant, now); err != nil {
 		return core.AuthResult{}, err
 	}
-	sess := session{ID: newID("ses"), Token: newID("tok"), UserID: userID, Guest: false, Nickname: nickname, CreatedAt: now}
+	sess := session{ID: newID("ses"), Token: newID("tok"), UserID: userID, Guest: false, Kind: core.KindHuman, Nickname: nickname, CreatedAt: now}
 	if err := insertSessionTx(ctx, tx, sess); err != nil {
 		return core.AuthResult{}, err
 	}
@@ -85,7 +86,7 @@ func (b *Backend) Login(accountName, password string) (core.AuthResult, error) {
 	if bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil {
 		return core.AuthResult{}, core.ErrInvalidCredentials
 	}
-	sess, err := b.createSession(ctx, userID, false, nickname)
+	sess, err := b.createSession(ctx, userID, false, nickname, core.KindHuman)
 	if err != nil {
 		return core.AuthResult{}, err
 	}
@@ -97,7 +98,20 @@ func (b *Backend) GuestSession(nickname string) core.AuthResult {
 		nickname = "Guest Operator"
 	}
 	ctx := context.Background()
-	sess, err := b.createSession(ctx, "", true, nickname)
+	sess, err := b.createSession(ctx, "", true, nickname, core.KindHuman)
+	if err != nil {
+		return core.AuthResult{}
+	}
+	result, _ := b.authResult(ctx, sess)
+	return result
+}
+
+func (b *Backend) PersonaSession(nickname string) core.AuthResult {
+	if strings.TrimSpace(nickname) == "" {
+		nickname = "深思伪人"
+	}
+	ctx := context.Background()
+	sess, err := b.createSession(ctx, "", true, nickname, core.KindAIPersona)
 	if err != nil {
 		return core.AuthResult{}
 	}
@@ -143,26 +157,26 @@ func (b *Backend) LedgerForUser(token string) ([]core.PointEntry, core.Balance, 
 
 // --- helpers ---
 
-func (b *Backend) createSession(ctx context.Context, userID string, guest bool, nickname string) (session, error) {
-	sess := session{ID: newID("ses"), Token: newID("tok"), UserID: userID, Guest: guest, Nickname: nickname, CreatedAt: b.clock()}
+func (b *Backend) createSession(ctx context.Context, userID string, guest bool, nickname, kind string) (session, error) {
+	sess := session{ID: newID("ses"), Token: newID("tok"), UserID: userID, Guest: guest, Kind: kind, Nickname: nickname, CreatedAt: b.clock()}
 	_, err := b.pool.Exec(ctx,
-		`INSERT INTO sessions (id, token, user_id, guest, nickname, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-		sess.ID, sess.Token, sess.UserID, sess.Guest, sess.Nickname, sess.CreatedAt)
+		`INSERT INTO sessions (id, token, user_id, guest, kind, nickname, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		sess.ID, sess.Token, sess.UserID, sess.Guest, sess.Kind, sess.Nickname, sess.CreatedAt)
 	return sess, err
 }
 
 func insertSessionTx(ctx context.Context, tx pgx.Tx, sess session) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO sessions (id, token, user_id, guest, nickname, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-		sess.ID, sess.Token, sess.UserID, sess.Guest, sess.Nickname, sess.CreatedAt)
+		`INSERT INTO sessions (id, token, user_id, guest, kind, nickname, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		sess.ID, sess.Token, sess.UserID, sess.Guest, sess.Kind, sess.Nickname, sess.CreatedAt)
 	return err
 }
 
 func (b *Backend) sessionByToken(ctx context.Context, token string) (session, error) {
 	var s session
 	err := b.pool.QueryRow(ctx,
-		`SELECT id, token, user_id, guest, nickname, created_at FROM sessions WHERE token = $1`,
-		token).Scan(&s.ID, &s.Token, &s.UserID, &s.Guest, &s.Nickname, &s.CreatedAt)
+		`SELECT id, token, user_id, guest, kind, nickname, created_at FROM sessions WHERE token = $1`,
+		token).Scan(&s.ID, &s.Token, &s.UserID, &s.Guest, &s.Kind, &s.Nickname, &s.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return session{}, core.ErrUnauthorized
 	}

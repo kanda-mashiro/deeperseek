@@ -437,6 +437,37 @@ func TestConversationsLifecycleAndOwnership(t *testing.T) {
 	}
 }
 
+func TestPersonaSessionStampsSourceAndSkipsBoard(t *testing.T) {
+	svc := NewService()
+
+	// a persona requester's request is tagged ai_persona and never board-eligible
+	persona := svc.PersonaSession("深思伪人-01")
+	req, err := svc.CreateRequest(context.Background(), persona.Token, "m", []Message{{Role: "user", Content: "q"}}, 0)
+	if err != nil {
+		t.Fatalf("persona create: %v", err)
+	}
+	if req.RequesterKind != KindAIPersona || req.BoardEligible {
+		t.Fatalf("persona request tagging: kind=%q board=%v", req.RequesterKind, req.BoardEligible)
+	}
+	if board, _ := svc.Board(50); len(board) != 0 {
+		t.Fatalf("persona request must not appear on the board, got %d", len(board))
+	}
+
+	// a persona responder's answer is tagged ai_persona (fresh service so the
+	// persona responder can't grab the queued persona-requester request above)
+	svc2 := NewService()
+	guest := svc2.GuestSession("")
+	responder := svc2.PersonaSession("深思伪人-02")
+	sid, assignments, _ := svc2.RegisterResponder(responder.Token)
+	_ = svc2.MarkResponderAvailable(sid)
+	gReq, _ := svc2.CreateRequest(context.Background(), guest.Token, "m", []Message{{Role: "user", Content: "hi"}}, 0)
+	<-assignments
+	snap, _, _ := svc2.RequestSnapshot(gReq.ID)
+	if snap.ResponderKind != KindAIPersona {
+		t.Fatalf("persona responder kind: %q", snap.ResponderKind)
+	}
+}
+
 func TestInputAndOutputLimits(t *testing.T) {
 	svc := NewService()
 	requester, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")

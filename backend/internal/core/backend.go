@@ -19,6 +19,7 @@ type Backend interface {
 	Register(accountName, nickname, password, repeated string) (AuthResult, error)
 	Login(accountName, password string) (AuthResult, error)
 	GuestSession(nickname string) AuthResult
+	PersonaSession(nickname string) AuthResult
 	Me(token string) (AuthResult, error)
 
 	CreateRequest(ctx context.Context, token, model string, messages []Message, maxOutputChars int) (*Request, error)

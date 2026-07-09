@@ -117,7 +117,7 @@ func (s *Service) Register(accountName, nickname, password, repeated string) (Au
 	s.usersByAccount[accountName] = user.ID
 	s.addLedgerLocked(user.ID, "", "signup_grant", SignupGrant, now)
 
-	session := s.createSessionLocked(user.ID, false, nickname, now)
+	session := s.createSessionLocked(user.ID, false, nickname, KindHuman, now)
 	return s.authResultLocked(session), nil
 }
 
@@ -133,7 +133,7 @@ func (s *Service) Login(accountName, password string) (AuthResult, error) {
 	if bcrypt.CompareHashAndPassword(user.PasswordHash, []byte(password)) != nil {
 		return AuthResult{}, ErrInvalidCredentials
 	}
-	session := s.createSessionLocked(user.ID, false, user.Nickname, time.Now().UTC())
+	session := s.createSessionLocked(user.ID, false, user.Nickname, KindHuman, time.Now().UTC())
 	return s.authResultLocked(session), nil
 }
 
@@ -143,7 +143,7 @@ func (s *Service) GuestSession(nickname string) AuthResult {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session := s.createSessionLocked("", true, nickname, time.Now().UTC())
+	session := s.createSessionLocked("", true, nickname, KindHuman, time.Now().UTC())
 	return s.authResultLocked(session)
 }
 
@@ -187,8 +187,8 @@ func (s *Service) CreateRequest(ctx context.Context, token string, model string,
 		RequesterID:        session.UserID,
 		RequesterSessionID: session.ID,
 		RequesterGuest:     session.Guest,
-		RequesterKind:      KindHuman,
-		BoardEligible:      session.Guest, // guests default to the public board; registered users are private
+		RequesterKind:      KindOrHuman(session.Kind),
+		BoardEligible:      session.Guest && session.Kind != KindAIPersona, // real guests only; personas never on the board
 		Messages:           append([]Message(nil), messages...),
 		Model:              model,
 		Status:             StatusQueued,
@@ -618,17 +618,38 @@ func (s *Service) LedgerForUser(token string) ([]PointEntry, Balance, error) {
 	return entries, s.balanceLocked(session.UserID), nil
 }
 
-func (s *Service) createSessionLocked(userID string, guest bool, nickname string, now time.Time) *Session {
+func (s *Service) createSessionLocked(userID string, guest bool, nickname, kind string, now time.Time) *Session {
 	session := &Session{
 		ID:        newID("ses"),
 		Token:     newID("tok"),
 		UserID:    userID,
 		Guest:     guest,
+		Kind:      kind,
 		Nickname:  nickname,
 		CreatedAt: now,
 	}
 	s.sessionsByTok[session.Token] = session
 	return session
+}
+
+// KindOrHuman treats an empty session kind as a real human.
+func KindOrHuman(kind string) string {
+	if kind == "" {
+		return KindHuman
+	}
+	return kind
+}
+
+// PersonaSession mints a guest-like session tagged ai_persona, used by the
+// persona subsystem so its requests and answers are stamped as AI 伪人.
+func (s *Service) PersonaSession(nickname string) AuthResult {
+	if strings.TrimSpace(nickname) == "" {
+		nickname = "深思伪人"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.createSessionLocked("", true, nickname, KindAIPersona, time.Now().UTC())
+	return s.authResultLocked(session)
 }
 
 func (s *Service) authResultLocked(session *Session) AuthResult {
@@ -701,7 +722,7 @@ func (s *Service) tryAssignLocked(now time.Time) {
 		req.ResponderSessionID = responderID
 		req.ResponderGuest = session.Guest
 		req.ResponderUserID = session.UserID
-		req.ResponderKind = KindHuman
+		req.ResponderKind = KindOrHuman(session.Kind)
 		req.ResponderDisplay = session.Nickname
 		req.UpdatedAt = now
 		s.activeByRes[responderID] = requestID

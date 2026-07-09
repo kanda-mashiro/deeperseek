@@ -71,6 +71,7 @@ type Session struct {
 	Token     string
 	UserID    string
 	Guest     bool
+	Kind      string // "" (human) | ai_persona
 	Nickname  string
 	CreatedAt time.Time
 }
