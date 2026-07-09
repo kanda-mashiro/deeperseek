@@ -96,6 +96,12 @@ func (m *Manager) tick(ctx context.Context) {
 	m.mu.Lock()
 	running := len(m.responders)
 	m.mu.Unlock()
+	// humans = everyone online minus THIS pod's personas. Correct on a single pod
+	// (all personas are local). MULTI-POD CAVEAT: during a leader handoff a dead
+	// leader's persona presence can linger up to presenceTTL and be miscounted as
+	// humans here; graceful shutdown (main) drops it on SIGTERM, and it self-heals
+	// within presenceTTL — but before running >1 replica, make OnlineResponderCount
+	// human-only (exclude ai_persona presence). See docs/DEPLOY-scaleout.md.
 	humans := online - running
 	if humans < 1 {
 		// nobody real is around; don't fabricate activity
@@ -120,7 +126,21 @@ func (m *Manager) tick(ctx context.Context) {
 func (m *Manager) ensureResponders(ctx context.Context, want int) {
 	m.mu.Lock()
 	have := len(m.responders)
+	// trim surplus personas so the pool never exceeds the human count (e.g. after
+	// some humans leave); each cancel unwinds the driver's UnregisterResponder
+	var trim []context.CancelFunc
+	for sid, cancel := range m.responders {
+		if have <= want {
+			break
+		}
+		trim = append(trim, cancel)
+		delete(m.responders, sid)
+		have--
+	}
 	m.mu.Unlock()
+	for _, cancel := range trim {
+		cancel()
+	}
 	for have < want {
 		m.startResponder(ctx)
 		have++
@@ -194,6 +214,10 @@ func (m *Manager) answer(ctx context.Context, sid string, a core.AssignedRequest
 			return true
 		}
 		if _, _, err := m.backend.SubmitFragment(sid, seq, chunk); err != nil {
+			// a non-terminal submit error (e.g. the answer hit the request's
+			// output cap) leaves the request assigned; Finish releases the
+			// responder and delivers what was committed, else it would wedge
+			_ = m.backend.Finish(sid)
 			return true
 		}
 		seq++

@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"deeperseek/backend/internal/core"
@@ -22,6 +24,9 @@ func main() {
 		addr = ":8080"
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	svc, cleanup := buildBackend()
 	defer cleanup()
 
@@ -32,11 +37,19 @@ func main() {
 		RateBurst:      envInt("DEEPERSEEK_RATE_BURST", 40),
 		TrustedProxies: envInt("DEEPERSEEK_TRUSTED_PROXIES", 1), // Traefik appends the real client IP
 	})
-	go svc.RunTimeoutSweeper(context.Background(), time.Second)
-	startPersonas(svc)
+	go svc.RunTimeoutSweeper(ctx, time.Second)
+	startPersonas(ctx, svc)
+
+	srv := &http.Server{Addr: addr, Handler: server.Handler()}
+	go func() {
+		<-ctx.Done() // SIGTERM/SIGINT: stop accepting, let personas reap via ctx
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
 
 	log.Printf("deeperseek backend listening on %s", addr)
-	if err := http.ListenAndServe(addr, server.Handler()); err != nil {
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
@@ -44,7 +57,7 @@ func main() {
 // startPersonas launches the AI-persona subsystem. It is on by default but inert
 // unless an LLM is configured (it reuses the fallback upstream). The manager
 // itself is leader-elected, so it is safe to start on every replica.
-func startPersonas(backend core.Backend) {
+func startPersonas(ctx context.Context, backend core.Backend) {
 	cfg := persona.DefaultConfig()
 	cfg.Enabled = envBool("DEEPERSEEK_PERSONA_ENABLED", true)
 	if n := envInt("DEEPERSEEK_PERSONA_MAX_RESPONDERS", 0); n > 0 {
@@ -64,7 +77,7 @@ func startPersonas(backend core.Backend) {
 		return
 	}
 	log.Printf("deeperseek personas on (max_responders=%d, target_queue=%d)", cfg.MaxResponders, cfg.TargetQueue)
-	go persona.NewManager(backend, cfg).Run(context.Background())
+	go persona.NewManager(backend, cfg).Run(ctx)
 }
 
 func envBool(key string, def bool) bool {

@@ -55,6 +55,27 @@ maintenance blip), or accept that in-flight parody requests may drop.
   / ExternalSecret, not live `kubectl` secrets — this is the exact gap noted in
   the earlier GitOps review, and it becomes load-bearing here.
 
+## Before running >1 replica: harden the persona subsystem
+
+The AI-persona manager (Feature 2) is leader-elected and safe to start on every
+replica, but two known multi-pod issues (surfaced by the persona audit, harmless
+on a single pod) must be fixed before scaling out:
+
+- **Human-only presence count.** `OnlineResponderCount` counts all responders,
+  and the manager infers humans as `online − (local personas)`. During a leader
+  handoff, a dead leader's persona presence can linger up to `presenceTTL` (15s)
+  and be miscounted as humans, so a new leader may briefly fabricate activity.
+  Fix: make `OnlineResponderCount` exclude `ai_persona` presence (tag persona
+  presence in a separate Redis set, or filter by session kind) so the count is
+  human-only. Self-heals within `presenceTTL` and graceful shutdown drops the
+  presence on SIGTERM, but fix it before multi-pod.
+- **Leader-scoped question posting.** In-flight `postQuestion` uses the manager's
+  root context and isn't cancelled on leadership loss, so a just-demoted leader
+  can still post one persona question. Bounded (≤1 per handoff); gate the final
+  `CreateRequest` on a re-check of `TryPersonaLeader` before scaling out.
+
+Single-pod deployments (the current default) are unaffected by both.
+
 ## Local / CI
 
 `go test ./...` and the browser e2e stay on the memory path with zero infra.

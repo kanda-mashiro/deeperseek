@@ -24,7 +24,10 @@ type Config struct {
 	Client    *http.Client
 }
 
-func (c Config) Enabled() bool { return c.APIKey != "" }
+// Enabled reports whether the client is fully configured. All three of base URL,
+// API key, and model are required — a half-configured client would fail every
+// call, so callers must treat it as disabled.
+func (c Config) Enabled() bool { return c.APIKey != "" && c.BaseURL != "" && c.Model != "" }
 
 func (c Config) client() *http.Client {
 	if c.Client != nil {
@@ -62,7 +65,17 @@ func (c Config) Stream(ctx context.Context, messages []core.Message, onDelta fun
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("llm upstream returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
-	return readSSE(resp.Body, onDelta)
+	// A 200 with no SSE frames means the upstream ignored stream:true or a gateway
+	// returned an error page as 200 (common with one-api style proxies). Surface it
+	// instead of silently reporting an empty, successful answer.
+	sawFrame, err := readSSE(resp.Body, onDelta)
+	if err != nil {
+		return err
+	}
+	if !sawFrame {
+		return fmt.Errorf("llm upstream returned no SSE data (content-type %q)", resp.Header.Get("Content-Type"))
+	}
+	return nil
 }
 
 // Complete accumulates the streamed answer into a single string.
@@ -75,9 +88,12 @@ func (c Config) Complete(ctx context.Context, messages []core.Message) (string, 
 	return b.String(), err
 }
 
-func readSSE(body io.Reader, onDelta func(string) error) error {
+// readSSE streams data frames to onDelta and reports whether it saw any SSE frame
+// at all (so a non-SSE 200 body can be distinguished from a real, empty stream).
+func readSSE(body io.Reader, onDelta func(string) error) (bool, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sawFrame := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -87,8 +103,9 @@ func readSSE(body io.Reader, onDelta func(string) error) error {
 		if payload == "" {
 			continue
 		}
+		sawFrame = true
 		if payload == "[DONE]" {
-			return nil
+			return true, nil
 		}
 		var chunk struct {
 			Choices []struct {
@@ -96,13 +113,13 @@ func readSSE(body io.Reader, onDelta func(string) error) error {
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return err
+			return sawFrame, err
 		}
 		for _, choice := range chunk.Choices {
 			if err := onDelta(choice.Delta["content"]); err != nil {
-				return err
+				return sawFrame, err
 			}
 		}
 	}
-	return scanner.Err()
+	return sawFrame, scanner.Err()
 }

@@ -96,6 +96,57 @@ func TestManagerPersonaAnswersHumanQuestion(t *testing.T) {
 	}
 }
 
+func TestManagerPersonaRecoversAfterOutputCap(t *testing.T) {
+	svc := core.NewService()
+	m := NewManager(svc, testConfig(fakeLLM(t, "这是一段明显超过十个字符的很长回答内容")))
+
+	human := svc.GuestSession("human")
+	if _, _, err := svc.RegisterResponder(human.Token); err != nil {
+		t.Fatalf("register human: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+	waitFor(t, func() bool { return svc.OnlineResponderCount() >= 2 }, "persona responder online")
+
+	asker := svc.GuestSession("asker")
+	// a tiny output cap makes SubmitFragment fail mid-answer; the persona must
+	// release the assignment (not wedge) so it can serve the next question
+	capped, _ := svc.CreateRequest(context.Background(), asker.Token, "m", []core.Message{{Role: "user", Content: "hi"}}, 10)
+	waitFor(t, func() bool {
+		snap, _, err := svc.RequestSnapshot(capped.ID)
+		return err == nil && snap.Status == core.StatusCompleted
+	}, "capped request terminal")
+
+	next, _ := svc.CreateRequest(context.Background(), asker.Token, "m", []core.Message{{Role: "user", Content: "again"}}, 0)
+	waitFor(t, func() bool {
+		snap, _, err := svc.RequestSnapshot(next.ID)
+		return err == nil && snap.Status == core.StatusCompleted && snap.ResponderKind == core.KindAIPersona
+	}, "persona answers the next question (not wedged)")
+}
+
+func TestManagerTrimsPersonasWhenHumansLeave(t *testing.T) {
+	svc := core.NewService()
+	cfg := testConfig(fakeLLM(t, "x"))
+	cfg.MaxResponders = 3
+	m := NewManager(svc, cfg)
+
+	h1 := svc.GuestSession("h1")
+	h2 := svc.GuestSession("h2")
+	sid1, _, _ := svc.RegisterResponder(h1.Token)
+	_, _, _ = svc.RegisterResponder(h2.Token)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+	// 2 humans -> 2 personas -> 4 online
+	waitFor(t, func() bool { return svc.OnlineResponderCount() >= 4 }, "two personas spawned")
+
+	// one human leaves -> persona pool must trim to 1 -> 1 human + 1 persona
+	svc.UnregisterResponder(sid1)
+	waitFor(t, func() bool { return svc.OnlineResponderCount() == 2 }, "persona pool trims to match humans")
+}
+
 func TestManagerSpawnsNoPersonasWithoutHumans(t *testing.T) {
 	svc := core.NewService()
 	m := NewManager(svc, testConfig(fakeLLM(t, "x")))

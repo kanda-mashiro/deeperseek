@@ -31,6 +31,32 @@ func TestStreamAndComplete(t *testing.T) {
 	}
 }
 
+func TestStreamRejectsNonSSE200(t *testing.T) {
+	// a gateway that ignores stream:true and returns a plain JSON/error body as 200
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"insufficient quota"}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := Config{BaseURL: upstream.URL, APIKey: "k", Model: "m", Client: upstream.Client()}
+	if _, err := cfg.Complete(context.Background(), []core.Message{{Role: "user", Content: "hi"}}); err == nil {
+		t.Fatal("a 200 body with no SSE frames must be an error, not a silent empty success")
+	}
+}
+
+func TestEnabledRequiresFullConfig(t *testing.T) {
+	full := Config{BaseURL: "http://x", APIKey: "k", Model: "m"}
+	if !full.Enabled() {
+		t.Fatal("a fully configured client should be enabled")
+	}
+	for _, c := range []Config{{APIKey: "k"}, {APIKey: "k", BaseURL: "http://x"}, {BaseURL: "http://x", Model: "m"}} {
+		if c.Enabled() {
+			t.Fatalf("a half-configured client must be disabled: %+v", c)
+		}
+	}
+}
+
 func TestStreamSurfacesUpstreamError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
