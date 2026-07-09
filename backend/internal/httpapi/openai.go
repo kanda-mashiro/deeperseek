@@ -19,11 +19,12 @@ type chatCompletionRequest struct {
 }
 
 type chatCompletionResponse struct {
-	ID      string                 `json:"id"`
-	Object  string                 `json:"object"`
-	Created int64                  `json:"created"`
-	Model   string                 `json:"model"`
-	Choices []chatCompletionChoice `json:"choices"`
+	ID            string                 `json:"id"`
+	Object        string                 `json:"object"`
+	Created       int64                  `json:"created"`
+	Model         string                 `json:"model"`
+	Choices       []chatCompletionChoice `json:"choices"`
+	ResponderKind string                 `json:"responder_kind,omitempty"`
 }
 
 type chatCompletionChoice struct {
@@ -126,7 +127,11 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 				flusher.Flush()
 			case core.StreamEventDone:
 				reason := event.FinishReason
-				writeSSEData(w, streamChunk(req, map[string]string{}, &reason))
+				chunk := streamChunk(req, map[string]string{}, &reason)
+				if snap, _, err := s.svc.RequestSnapshot(req.ID); err == nil {
+					chunk.ResponderKind = snap.ResponderKind
+				}
+				writeSSEData(w, chunk)
 				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				s.persistAssistant(convID, token, req.ID)

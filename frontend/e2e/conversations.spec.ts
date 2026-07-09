@@ -18,6 +18,9 @@ test("a conversation persists across a page reload", async ({ browser }) => {
     await responder.getByTestId("answer-finish").click();
     await expect(requester.getByTestId("request-answer")).toContainText("持久化答案");
 
+    // a human answer is labelled honestly (responder_kind plumbed to the bubble)
+    await expect(requester.getByTestId("request-assistant-bubble").last()).toContainText("真人作答");
+
     // the conversation shows up in the sidebar
     await expect(requester.getByTestId("conv-item").first()).toBeVisible();
 
@@ -25,6 +28,8 @@ test("a conversation persists across a page reload", async ({ browser }) => {
     await requester.reload();
     await expect(requester.getByTestId("request-user-bubble")).toContainText(`conv question ${run}`, { timeout: 10_000 });
     await expect(requester.getByTestId("request-answer")).toContainText("持久化答案");
+    // the persisted source label survives the reload too
+    await expect(requester.getByTestId("request-assistant-bubble").last()).toContainText("真人作答");
 
     // "new chat" clears the visible transcript
     await requester.getByTestId("new-chat").click();

@@ -70,6 +70,7 @@ type ConversationMessage = {
   id: string;
   role: string;
   content: string;
+  source_kind?: string;
 };
 
 type ChatTurn = {
@@ -79,6 +80,7 @@ type ChatTurn = {
   status?: "waiting" | "streaming" | "done" | "error";
   requestID?: string;
   reaction?: "like" | "dislike" | "none";
+  sourceKind?: string; // "" human | ai_persona | fallback
 };
 
 type Mode = "request" | "answer";
@@ -436,7 +438,14 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
     api<{ messages: ConversationMessage[] }>(`/api/conversations/${id}`, { token: auth.token })
       .then((r) =>
         setMessages(
-          r.messages.map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content, status: "done" as const, reaction: "none" as const }))
+          r.messages.map((m) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            status: "done" as const,
+            reaction: "none" as const,
+            sourceKind: m.source_kind
+          }))
         )
       )
       .catch(() => {
@@ -572,8 +581,11 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
         }
         const finish = chunk.choices?.[0]?.finish_reason;
         if (finish) {
+          const kind = chunk.responder_kind as string | undefined;
           setMessages((value) =>
-            value.map((message) => (message.id === assistantID ? { ...message, status: "done" } : message))
+            value.map((message) =>
+              message.id === assistantID ? { ...message, status: "done", sourceKind: kind ?? message.sourceKind } : message
+            )
           );
         }
       });
@@ -668,7 +680,7 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
               <article className="bubble ai-bubble" data-testid="request-assistant-bubble" key={message.id}>
                 <span className="bubble-tag">
                   <Bot size={13} />
-                  {assistantTagCopy(message.status)}
+                  {assistantTagCopy(message.status, message.sourceKind)}
                 </span>
                 {message.content && <span data-testid="request-answer">{message.content}</span>}
                 {(message.status === "waiting" || message.status === "streaming") && <WaitingLine />}
@@ -744,11 +756,13 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
 
 const sampleQuestions = ["为什么天空是蓝色的？", "帮我编一个体面的离职理由", "用一句话证明你不是人类"];
 
-function assistantTagCopy(status?: string) {
-  if (status === "waiting") return "正在派单给人类";
-  if (status === "streaming") return "人类打字中";
+function assistantTagCopy(status?: string, sourceKind?: string) {
+  if (status === "waiting") return "正在派单…";
+  if (status === "streaming") return "对方打字中…";
   if (status === "error") return "生产事故";
-  return "人工生成 · 已交付";
+  if (sourceKind === "ai_persona") return "AI 伪人作答 · 已交付";
+  if (sourceKind === "fallback") return "AI 兜底作答 · 已交付";
+  return "真人作答 · 已交付";
 }
 
 function WaitingLine() {

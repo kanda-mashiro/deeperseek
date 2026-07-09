@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"deeperseek/backend/internal/core"
 	"deeperseek/backend/internal/httpapi"
+	"deeperseek/backend/internal/llm"
+	"deeperseek/backend/internal/persona"
 	"deeperseek/backend/internal/pgredis"
 )
 
@@ -30,10 +33,48 @@ func main() {
 		TrustedProxies: envInt("DEEPERSEEK_TRUSTED_PROXIES", 1), // Traefik appends the real client IP
 	})
 	go svc.RunTimeoutSweeper(context.Background(), time.Second)
+	startPersonas(svc)
 
 	log.Printf("deeperseek backend listening on %s", addr)
 	if err := http.ListenAndServe(addr, server.Handler()); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// startPersonas launches the AI-persona subsystem. It is on by default but inert
+// unless an LLM is configured (it reuses the fallback upstream). The manager
+// itself is leader-elected, so it is safe to start on every replica.
+func startPersonas(backend core.Backend) {
+	cfg := persona.DefaultConfig()
+	cfg.Enabled = envBool("DEEPERSEEK_PERSONA_ENABLED", true)
+	if n := envInt("DEEPERSEEK_PERSONA_MAX_RESPONDERS", 0); n > 0 {
+		cfg.MaxResponders = n
+	}
+	if n := envInt("DEEPERSEEK_PERSONA_TARGET_QUEUE", -1); n >= 0 {
+		cfg.TargetQueue = n
+	}
+	cfg.LLM = llm.Config{
+		BaseURL:   os.Getenv("DEEPERSEEK_FALLBACK_BASE_URL"),
+		APIKey:    os.Getenv("DEEPERSEEK_FALLBACK_API_KEY"),
+		Model:     os.Getenv("DEEPERSEEK_FALLBACK_MODEL"),
+		MaxTokens: cfg.AnswerRunes,
+	}
+	if !cfg.Enabled || !cfg.LLM.Enabled() {
+		log.Printf("deeperseek personas off (enabled=%t, llm_configured=%t)", cfg.Enabled, cfg.LLM.Enabled())
+		return
+	}
+	log.Printf("deeperseek personas on (max_responders=%d, target_queue=%d)", cfg.MaxResponders, cfg.TargetQueue)
+	go persona.NewManager(backend, cfg).Run(context.Background())
+}
+
+func envBool(key string, def bool) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "":
+		return def
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
