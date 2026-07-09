@@ -88,6 +88,12 @@ func (s *Server) handleAnswerWebSocket(w http.ResponseWriter, r *http.Request) {
 			err = s.svc.Finish(sessionID)
 			if err == nil {
 				write(wsOK("finish_ack"))
+				// the answer reward is credited synchronously in Finish; push the
+				// fresh balance back over this socket so the responder's points
+				// update live instead of only on refresh
+				if auth, mErr := s.svc.Me(token); mErr == nil {
+					write(map[string]any{"type": "balance", "balance": auth.Balance})
+				}
 			}
 		case "skip":
 			err = s.svc.Skip(sessionID)

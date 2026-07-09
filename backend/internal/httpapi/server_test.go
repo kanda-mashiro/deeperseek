@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"deeperseek/backend/internal/core"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestHealthAndReadyReportMemoryMode(t *testing.T) {
@@ -109,6 +111,63 @@ func TestClientIPTrustsRightmostHop(t *testing.T) {
 	// no trusted proxy -> XFF ignored entirely
 	if ip := clientIP(mk("evil", "203.0.113.7:44000"), 0); ip != "203.0.113.7" {
 		t.Fatalf("expected XFF ignored, got %q", ip)
+	}
+}
+
+func TestWebSocketPushesBalanceOnFinish(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServer(svc).Handler())
+	defer server.Close()
+
+	responder, err := svc.Register("bob", "Bob", "pass1234", "pass1234")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/answer?token=" + responder.Token
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	readUntil := func(target string) map[string]any {
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for {
+			var m map[string]any
+			if err := conn.ReadJSON(&m); err != nil {
+				t.Fatalf("read (want %s): %v", target, err)
+			}
+			if m["type"] == target {
+				return m
+			}
+		}
+	}
+
+	if err := conn.WriteJSON(map[string]any{"type": "available"}); err != nil {
+		t.Fatalf("available: %v", err)
+	}
+	readUntil("available_ack")
+
+	guest := svc.GuestSession("")
+	if _, err := svc.CreateRequest(context.Background(), guest.Token, "m", []core.Message{{Role: "user", Content: "hi"}}, 0); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	readUntil("assigned")
+
+	if err := conn.WriteJSON(map[string]any{"type": "fragment", "client_seq": 1, "text": "答案"}); err != nil {
+		t.Fatalf("fragment: %v", err)
+	}
+	readUntil("fragment_ack")
+	if err := conn.WriteJSON(map[string]any{"type": "finish"}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	// the reward must be pushed live over the socket, not left for a refresh
+	bal := readUntil("balance")
+	payload, _ := bal["balance"].(map[string]any)
+	total, _ := payload["total"].(float64)
+	if want := core.SignupGrant + core.BaseAnswerReward; int(total) != want {
+		t.Fatalf("expected pushed balance total %d after answer reward, got %v", want, bal["balance"])
 	}
 }
 

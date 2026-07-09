@@ -261,7 +261,7 @@ function App() {
       ) : mode === "request" ? (
         <RequestPanel auth={auth} onAuth={setAuth} />
       ) : (
-        <AnswerPanel auth={auth} />
+        <AnswerPanel auth={auth} onAuth={setAuth} />
       )}
     </main>
   );
@@ -777,7 +777,7 @@ function WaitingLine() {
   );
 }
 
-function AnswerPanel({ auth }: { auth: AuthResult }) {
+function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthResult) => void }) {
   const [tab, setTab] = useState<"work" | "board">("work");
   const [connected, setConnected] = useState(false);
   const [assignment, setAssignment] = useState<AssignedRequest | null>(null);
@@ -866,6 +866,9 @@ function AnswerPanel({ auth }: { auth: AuthResult }) {
       if (msg.type === "finish_ack") {
         setShiftCount((value) => value + 1);
         backToWaiting();
+      }
+      if (msg.type === "balance") {
+        onAuth({ ...auth, balance: msg.balance });
       }
       if (msg.type === "skip_ack") {
         backToWaiting();
