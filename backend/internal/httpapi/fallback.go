@@ -1,12 +1,7 @@
 package httpapi
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -14,6 +9,7 @@ import (
 	"time"
 
 	"deeperseek/backend/internal/core"
+	"deeperseek/backend/internal/llm"
 )
 
 const (
@@ -154,45 +150,26 @@ func (s *Server) runFallbackResponder(sessionID string, assignment core.Assigned
 	return true
 }
 
-func (s *Server) callFallbackUpstream(assignment core.AssignedRequest, onDelta func(string) error) error {
-	body, err := json.Marshal(chatCompletionRequest{
-		Model:     s.fallback.Model,
-		Messages:  fallbackMessages(assignment.Messages),
-		Stream:    true,
-		MaxTokens: s.fallback.MaxAnswerRunes,
-	})
-	if err != nil {
-		return err
+func (config FallbackConfig) llmConfig() llm.Config {
+	return llm.Config{
+		BaseURL:   config.BaseURL,
+		APIKey:    config.APIKey,
+		Model:     config.Model,
+		MaxTokens: config.MaxAnswerRunes,
+		Client:    config.Client,
 	}
+}
 
+func (s *Server) callFallbackUpstream(assignment core.AssignedRequest, onDelta func(string) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-
-	endpoint := strings.TrimRight(s.fallback.BaseURL, "/") + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.fallback.APIKey)
-
-	resp, err := s.fallback.Client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("fallback upstream returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
 	emitter := fallbackEmitter{
 		ctx:           ctx,
 		onDelta:       onDelta,
 		chunkDelay:    s.fallback.ChunkDelay,
 		maxChunkRunes: s.fallback.MaxChunkRunes,
 	}
-	return readFallbackSSE(resp.Body, emitter.Emit)
+	return s.fallback.llmConfig().Stream(ctx, fallbackMessages(assignment.Messages), emitter.Emit)
 }
 
 func fallbackMessages(messages []core.Message) []core.Message {
@@ -204,38 +181,6 @@ func fallbackMessages(messages []core.Message) []core.Message {
 	})
 	next = append(next, messages...)
 	return next
-}
-
-func readFallbackSSE(body io.Reader, onDelta func(string) error) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
-			if payload == "[DONE]" {
-				return nil
-			}
-			continue
-		}
-		var chunk struct {
-			Choices []struct {
-				Delta map[string]string `json:"delta"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return err
-		}
-		for _, choice := range chunk.Choices {
-			if err := onDelta(choice.Delta["content"]); err != nil {
-				return err
-			}
-		}
-	}
-	return scanner.Err()
 }
 
 type fallbackEmitter struct {
