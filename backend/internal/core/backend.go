@@ -45,6 +45,11 @@ type Backend interface {
 
 	Board(limit int) ([]BoardTicket, error)
 
+	// persona subsystem primitives
+	OnlineResponderCount() int
+	QueuedRequestCount() int
+	TryPersonaLeader(podID string, ttl time.Duration) bool
+
 	CreateConversation(token, title string) (Conversation, error)
 	ListConversations(token string) ([]Conversation, error)
 	GetConversation(token, id string) (Conversation, []ConversationMessage, error)

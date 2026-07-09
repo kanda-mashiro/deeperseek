@@ -544,6 +544,22 @@ func (s *Service) RequestSnapshot(requestID string) (*Request, string, error) {
 	return cloneRequest(req), s.answerTextLocked(requestID), nil
 }
 
+// --- persona subsystem primitives (single-node: always leader) ---
+
+func (s *Service) OnlineResponderCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.responders)
+}
+
+func (s *Service) QueuedRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.queue)
+}
+
+func (s *Service) TryPersonaLeader(string, time.Duration) bool { return true }
+
 // QuestionCategory derives a non-content, structural label for a question set so
 // the spectator board can describe it without leaking its text.
 func QuestionCategory(messages []Message) string {
