@@ -1,24 +1,30 @@
-# deeperseek
-一个娱乐向的项目，人类模拟AI回复
+# DeeperSeek
 
-## Current slice
+一个让真人模拟 AI、再用 OpenAI Compatible 协议回答用户的娱乐项目。
 
-- Go backend with in-memory spec implementation.
+## Current implementation
+
+- Go backend with interchangeable in-memory and PostgreSQL + Redis backends.
 - OpenAI-compatible `POST /v1/chat/completions`.
 - SSE streaming while a human responder types.
 - WebSocket responder station.
-- React frontend for default guest Request AI and Simulate AI.
-- Multi-turn chat context.
+- React frontend that opens directly as a guest in Request AI mode.
+- Multi-turn conversations with server-side conversation history.
 - Inline responder editor where committed text stays in place and becomes
   immutable.
 - Light/dark/system theme control with local persistence.
+- Public spectator board with privacy-safe request metadata.
+- Optional AI personas that participate through the same queue and responder
+  protocol while remaining visibly identified.
 - Optional fallback responder that answers through an OpenAI-compatible upstream
   when no human accepts a queued request within 10 seconds.
 - Spec-first behavior in `docs/SPEC.md`.
 
-The current backend is a runnable vertical slice. It keeps Redis/PostgreSQL
-boundaries explicit in the spec, while this implementation uses in-memory state
-for local development and tests.
+With neither `DATABASE_URL` nor `REDIS_URL` set, the backend uses the in-memory
+single-node implementation for local development and tests. With both set, it
+uses the distributed PostgreSQL + Redis implementation. Setting only one is a
+fatal configuration error. See `docs/DEPLOY-scaleout.md` before enabling multiple
+replicas.
 
 ## Run locally
 
@@ -93,6 +99,8 @@ The E2E suite covers:
 - Log out and log back in.
 - Run multiple browser users concurrently with randomized request, answer, and
   reaction timing.
+- Recover visibly when guest bootstrap or an answer stream fails.
+- Keep the full composer inside the first viewport on desktop and mobile.
 
 ## Production image
 
@@ -108,7 +116,19 @@ DEEPERSEEK_FALLBACK_MODEL=deepseek/deepseek-v4-flash
 DEEPERSEEK_FALLBACK_DELAY=10s
 DEEPERSEEK_FALLBACK_CHUNK_DELAY=85ms
 DEEPERSEEK_FALLBACK_MAX_CHUNK_RUNES=5
+DEEPERSEEK_RATE_PER_MIN=120
+DEEPERSEEK_RATE_BURST=40
 ```
+
+Distributed mode additionally requires both variables:
+
+```sh
+DATABASE_URL=postgres://...
+REDIS_URL=redis://...
+```
+
+Use `/api/health` for liveness and `/api/ready` for readiness. In distributed
+mode, readiness verifies both PostgreSQL and Redis.
 
 Build locally:
 
@@ -122,5 +142,13 @@ pushes images on `main`:
 
 ```text
 ghcr.io/kanda-mashiro/deeperseek:<commit-sha>
+ghcr.io/kanda-mashiro/deeperseek:main-<timestamp>-<short-sha>
 ghcr.io/kanda-mashiro/deeperseek:main
+```
+
+Production smoke tests can be run against the deployed domain with:
+
+```sh
+cd frontend
+npx playwright test -c playwright.prod.config.ts
 ```
