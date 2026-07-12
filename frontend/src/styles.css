@@ -774,6 +774,124 @@ textarea:focus {
   min-width: 120px;
 }
 
+.markdown-content {
+  min-width: 0;
+  line-height: 1.7;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content blockquote,
+.markdown-content pre,
+.markdown-content table {
+  margin: 0.65em 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  margin: 1em 0 0.45em;
+  font-size: 1em;
+  line-height: 1.35;
+}
+
+.markdown-content h1 {
+  font-size: 1.28em;
+}
+
+.markdown-content h2 {
+  font-size: 1.16em;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 1.45em;
+}
+
+.markdown-content li + li {
+  margin-top: 0.2em;
+}
+
+.markdown-content li.task-list-item {
+  list-style: none;
+}
+
+.markdown-content input[type="checkbox"] {
+  margin: 0 0.45em 0 -1.35em;
+  accent-color: var(--success);
+}
+
+.markdown-content blockquote {
+  padding-left: 0.85em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.markdown-content a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.markdown-content code {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-soft);
+  padding: 0.12em 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.markdown-content pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.markdown-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--border);
+  padding: 6px 9px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.markdown-content th {
+  background: var(--panel-soft);
+  font-weight: 650;
+}
+
 .bubble-tag {
   display: flex;
   align-items: center;
@@ -1023,7 +1141,6 @@ textarea:focus {
   border: 1px solid var(--border);
   border-left: 3px solid var(--success);
   line-height: 1.7;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 

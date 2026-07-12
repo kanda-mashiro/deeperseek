@@ -555,6 +555,21 @@ func (s *Service) OnlineResponderCount() int {
 	return len(s.responders)
 }
 
+func (s *Service) OnlineHumanResponderCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for sessionID := range s.responders {
+		for _, session := range s.sessionsByTok {
+			if session.ID == sessionID && KindOrHuman(session.Kind) == KindHuman {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
 func (s *Service) QueuedRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -2,7 +2,10 @@ package pgredis
 
 import (
 	"context"
+	"strconv"
 	"time"
+
+	"deeperseek/backend/internal/core"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -13,6 +16,25 @@ func (b *Backend) OnlineResponderCount() int {
 		return 0
 	}
 	return n
+}
+
+func (b *Backend) OnlineHumanResponderCount() int {
+	ctx := context.Background()
+	min := strconv.FormatInt(b.clock().Add(-presenceTTL).UnixMilli(), 10)
+	sessionIDs, err := b.rdb.ZRangeByScore(ctx, b.presenceKey(), &redis.ZRangeBy{
+		Min: min,
+		Max: "+inf",
+	}).Result()
+	if err != nil || len(sessionIDs) == 0 {
+		return 0
+	}
+	var count int
+	if err := b.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM sessions WHERE id = ANY($1::text[]) AND kind <> $2`,
+		sessionIDs, core.KindAIPersona).Scan(&count); err != nil {
+		return 0
+	}
+	return count
 }
 
 func (b *Backend) QueuedRequestCount() int {

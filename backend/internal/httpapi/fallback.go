@@ -90,12 +90,20 @@ func (s *Server) scheduleFallback(req *core.Request) {
 		return
 	}
 	requestID := req.ID
+	initialDelay := s.fallback.Delay
+	if s.svc.OnlineHumanResponderCount() == 0 {
+		initialDelay = 0
+	}
 	go func() {
 		attempt := 1
+		delay := initialDelay
 		for {
-			timer := time.NewTimer(s.fallback.Delay)
-			<-timer.C
-			timer.Stop()
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				<-timer.C
+				timer.Stop()
+			}
+			delay = s.fallback.Delay
 
 			sessionID, assignment, ok := s.svc.AcquireFallbackAssignment(requestID)
 			if !ok {

@@ -483,7 +483,7 @@ func TestChatCompletionsFallbackAnswersWhenNoHumanResponder(t *testing.T) {
 			BaseURL:       upstream.URL,
 			APIKey:        "test-fallback-key",
 			Model:         "deepseek/deepseek-v4-flash",
-			Delay:         10 * time.Millisecond,
+			Delay:         2 * time.Second,
 			ChunkDelay:    time.Millisecond,
 			MaxChunkRunes: 16,
 			Client:        upstream.Client(),
@@ -500,7 +500,8 @@ func TestChatCompletionsFallbackAnswersWhenNoHumanResponder(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+requester.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	started := time.Now()
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
@@ -516,6 +517,64 @@ func TestChatCompletionsFallbackAnswersWhenNoHumanResponder(t *testing.T) {
 	}
 	if atomic.LoadInt32(&upstreamCalls) != 1 {
 		t.Fatalf("expected one upstream call, got %d", upstreamCalls)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("fallback should start immediately with no human online, elapsed=%s", elapsed)
+	}
+}
+
+func TestChatCompletionsFallbackKeepsDelayWhenHumanResponderOnline(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"delayed\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	svc := core.NewService()
+	human := svc.GuestSession("human")
+	humanID, _, err := svc.RegisterResponder(human.Token)
+	if err != nil {
+		t.Fatalf("register human responder: %v", err)
+	}
+	defer svc.UnregisterResponder(humanID)
+
+	server := httptest.NewServer(NewServerWithOptions(svc, ServerOptions{
+		Fallback: FallbackConfig{
+			Enabled:       true,
+			BaseURL:       upstream.URL,
+			APIKey:        "test-fallback-key",
+			Model:         "deepseek/deepseek-v4-flash",
+			Delay:         250 * time.Millisecond,
+			ChunkDelay:    time.Millisecond,
+			MaxChunkRunes: 16,
+			Client:        upstream.Client(),
+		},
+	}).Handler())
+	defer server.Close()
+
+	requester := svc.GuestSession("")
+	body := []byte(`{"model":"deeperseek-human","stream":true,"messages":[{"role":"user","content":"human is online"}]}`)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+requester.Token)
+
+	started := time.Now()
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	content, finish, done := readStreamForTest(t, resp)
+	if content != "delayed" || finish != string(core.FinishStop) || !done {
+		t.Fatalf("unexpected delayed fallback stream: content=%q finish=%q done=%v", content, finish, done)
+	}
+	if elapsed := time.Since(started); elapsed < 200*time.Millisecond {
+		t.Fatalf("fallback bypassed the human-first delay, elapsed=%s", elapsed)
 	}
 }
 
@@ -675,7 +734,7 @@ func TestChatCompletionsFallbackRetriesAfterUpstreamFailure(t *testing.T) {
 			BaseURL:       upstream.URL,
 			APIKey:        "test-fallback-key",
 			Model:         "deepseek/deepseek-v4-flash",
-			Delay:         10 * time.Millisecond,
+			Delay:         50 * time.Millisecond,
 			ChunkDelay:    time.Millisecond,
 			MaxChunkRunes: 16,
 			Client:        upstream.Client(),
@@ -692,6 +751,7 @@ func TestChatCompletionsFallbackRetriesAfterUpstreamFailure(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+requester.Token)
 
+	started := time.Now()
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -708,6 +768,9 @@ func TestChatCompletionsFallbackRetriesAfterUpstreamFailure(t *testing.T) {
 	}
 	if atomic.LoadInt32(&upstreamCalls) != 2 {
 		t.Fatalf("expected two upstream calls, got %d", upstreamCalls)
+	}
+	if elapsed := time.Since(started); elapsed < 40*time.Millisecond {
+		t.Fatalf("fallback retry skipped configured delay, elapsed=%s", elapsed)
 	}
 }
 

@@ -524,6 +524,27 @@ func TestPersonaSessionStampsSourceAndSkipsBoard(t *testing.T) {
 	}
 }
 
+func TestOnlineHumanResponderCountExcludesPersonas(t *testing.T) {
+	svc := NewService()
+	human := svc.GuestSession("human")
+	persona := svc.PersonaSession("persona")
+
+	humanID, _, err := svc.RegisterResponder(human.Token)
+	if err != nil {
+		t.Fatalf("register human: %v", err)
+	}
+	defer svc.UnregisterResponder(humanID)
+	personaID, _, err := svc.RegisterResponder(persona.Token)
+	if err != nil {
+		t.Fatalf("register persona: %v", err)
+	}
+	defer svc.UnregisterResponder(personaID)
+
+	if got := svc.OnlineHumanResponderCount(); got != 1 {
+		t.Fatalf("expected one online human responder, got %d", got)
+	}
+}
+
 func TestInputAndOutputLimits(t *testing.T) {
 	svc := NewService()
 	requester, _ := svc.Register("alice", "Alice", "pass1234", "pass1234")

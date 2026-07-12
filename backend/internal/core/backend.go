@@ -47,6 +47,7 @@ type Backend interface {
 
 	// persona subsystem primitives
 	OnlineResponderCount() int
+	OnlineHumanResponderCount() int
 	QueuedRequestCount() int
 	TryPersonaLeader(podID string, ttl time.Duration) bool
 

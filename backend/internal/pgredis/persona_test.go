@@ -20,6 +20,36 @@ func TestPersonaLeaderLeaseIsOwnerChecked(t *testing.T) {
 	}
 }
 
+func TestOnlineHumanResponderCountExcludesPersonas(t *testing.T) {
+	b := backendForTest(t)
+	human := b.GuestSession("human")
+	persona := b.PersonaSession("persona")
+
+	humanID, _, err := b.RegisterResponder(human.Token)
+	if err != nil {
+		t.Fatalf("register human: %v", err)
+	}
+	defer b.UnregisterResponder(humanID)
+	personaID, _, err := b.RegisterResponder(persona.Token)
+	if err != nil {
+		t.Fatalf("register persona: %v", err)
+	}
+	defer b.UnregisterResponder(personaID)
+
+	if got := b.OnlineHumanResponderCount(); got != 1 {
+		t.Fatalf("expected one online human responder, got %d", got)
+	}
+	if got := b.OnlineResponderCount(); got != 2 {
+		t.Fatalf("expected two total responders, got %d", got)
+	}
+	if _, err := b.pool.Exec(context.Background(), `UPDATE sessions SET kind = '' WHERE id = $1`, humanID); err != nil {
+		t.Fatalf("set legacy empty human kind: %v", err)
+	}
+	if got := b.OnlineHumanResponderCount(); got != 1 {
+		t.Fatalf("expected legacy empty kind to count as human, got %d", got)
+	}
+}
+
 func TestPersonaPresenceCounts(t *testing.T) {
 	b := backendForTest(t)
 	ctx := context.Background()

@@ -16,8 +16,9 @@
 - Public spectator board with privacy-safe request metadata.
 - Optional AI personas that participate through the same queue and responder
   protocol while remaining visibly identified.
-- Optional fallback responder that answers through an OpenAI-compatible upstream
-  when no human accepts a queued request within 10 seconds.
+- Optional fallback responder that answers through an OpenAI-compatible upstream:
+  immediately when no human responder is online, or after 10 seconds when a
+  human responder is connected but has not started answering.
 - Spec-first behavior in `docs/SPEC.md`.
 
 With neither `DATABASE_URL` nor `REDIS_URL` set, the backend uses the in-memory
@@ -43,7 +44,9 @@ make dev-backend
 
 Enable fallback answering by setting `DEEPERSEEK_FALLBACK_API_KEY` before
 starting the backend. The default fallback base URL is `https://oneapi.43ever.me`
-and the default fallback model is `deepseek/deepseek-v4-flash`.
+and the default fallback model is `deepseek/deepseek-v4-flash`. The configured
+delay applies only when at least one human responder is online and to retries
+after a failed fallback attempt.
 
 Optional fallback variables:
 

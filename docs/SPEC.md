@@ -1,6 +1,6 @@
 # DeeperSeek Product Specification
 
-Status: Frozen v0.5
+Status: Frozen v0.6
 
 This document is the source of truth for product behavior after it is frozen.
 Implementation and tests must be derived from this document, not the other way
@@ -8,9 +8,10 @@ around.
 
 ## 1. Product Definition
 
-DeeperSeek is a parody AI chat product. The system never uses a real AI model
-for answers. Every assistant response is typed manually by another human user
-who is temporarily acting as the "AI".
+DeeperSeek is a parody AI chat product. The primary path is human-first: assistant
+responses are typed manually by another human user who is temporarily acting as
+the "AI". An AI model may answer only through the explicitly identified persona
+or fallback paths defined below.
 
 The product has two primary modes:
 
@@ -177,10 +178,18 @@ The OpenAI streaming API connection may remain open while queued. During this
 period it may send heartbeat comments, but it must not send assistant
 `delta.content`.
 
-If a request has remained queued for 10 seconds without being assigned to a
-human responder, the backend starts a fallback responder. The fallback is itself
-part of the joke: an AI is simulating a human who is simulating an AI. The
-fallback responder uses an OpenAI-compatible upstream service with fixed
+When fallback is configured, the backend checks the number of connected human
+responders when a request is created:
+
+- If no human responder is online, the backend attempts to acquire the queued
+  request for fallback immediately, without waiting for the normal delay.
+- If at least one human responder is online, the human-first path keeps its
+  configured fallback delay, initially 10 seconds. If no human has committed a
+  fragment when that delay expires, fallback may acquire the request.
+
+AI persona responders do not count as connected human responders for this
+decision. The fallback is itself part of the joke: an AI is simulating a human
+who is simulating an AI. It uses an OpenAI-compatible upstream service with fixed
 fallback base URL, model, and API key configuration. The API key must be supplied
 as process configuration and must not be exposed to the browser.
 
@@ -191,9 +200,11 @@ append-only fragments and pace those fragments so the requester can see a
 human-like streaming cadence. The pacing must be configurable for tests and
 operations.
 
-If a human responder is assigned before the 10 second timer fires, the fallback
-must not run. If the requester cancels before the fallback commits the first
-fragment, the fallback must stop without emitting assistant content.
+If a human responder is assigned before the delayed fallback timer fires, the
+fallback must not run. If the requester cancels before fallback commits the first
+fragment, fallback must stop without emitting assistant content. A failed or
+contended immediate attempt must return to the configured delay before retrying;
+it must not spin in a zero-delay loop.
 
 ### 4.3 Matching
 
@@ -472,6 +483,17 @@ Animations must respect `prefers-reduced-motion`.
 The visual direction is a polished parody of serious AI products: professional,
 clean, and slightly absurd, rather than toy-like.
 
+Assistant content in the Request AI conversation and spectator board must render
+Markdown with GitHub Flavored Markdown extensions. At minimum this includes
+headings, paragraphs, emphasis, lists, blockquotes, links, tables, inline code,
+fenced code blocks, task lists, and strikethrough.
+
+Markdown rendering must remain safe for untrusted answer text: raw HTML is not
+executed or inserted into the page, unsafe link protocols are rejected, and
+external links opened in a new tab use `noopener noreferrer`. Streaming partial
+Markdown may be reparsed as fragments arrive, but it must remain readable and
+must not remove the active thinking indicator before finish.
+
 Automated browser verification must record a video that exercises theme changes,
 mode changes, and the request/answer flow. The video is acceptance evidence that
 the visible transitions are animated rather than hard cuts.
@@ -510,8 +532,10 @@ Required:
 - `stream = true` returns SSE.
 - queued stream sends no `delta.content`.
 - committed fragment produces `delta.content`.
-- a queued request with no human responder for 10 seconds is answered by the
-  fallback OpenAI-compatible responder.
+- a request created with no human responder online starts the fallback
+  OpenAI-compatible responder immediately.
+- a request created while a human responder is online keeps the configured
+  fallback delay.
 - fallback responder output is streamed as paced chunks even if the upstream
   sends a large delta quickly.
 - a request assigned to a human responder before 10 seconds is not answered by
@@ -535,6 +559,9 @@ Required:
 - Chinese IME composition can produce draft text without committing intermediate
   composition text.
 - multi-turn chat sends prior user and assistant messages to the responder.
+- streamed assistant Markdown renders headings, lists, links, tables, and code.
+- raw HTML in assistant Markdown is not executed or inserted as live DOM.
+- spectator board answers use the same safe Markdown renderer.
 - requester can like and dislike after completion.
 - mobile viewport can complete both request and responder flows.
 - theme defaults to system, follows system dark/light settings, and supports
@@ -548,6 +575,14 @@ Required:
   ratios, including more requesters than responders and more responders than
   requesters, without stranded streams or duplicate assignment.
 
+### 11.5 CI Quality Gate
+
+Required:
+
+- repository-controlled GitHub Actions use maintained action runtimes.
+- the successful CI run has no action-runtime deprecation annotations.
+- build, test, and browser acceptance complete without repository-owned warnings.
+
 ## 12. Initial Acceptance Scenarios
 
 The first implementation is not accepted until these scenarios pass:
@@ -555,8 +590,8 @@ The first implementation is not accepted until these scenarios pass:
 1. A guest can open the site and ask a question without typing a nickname.
 2. A new user registers and receives 20 points.
 3. A logged-in requester creates a request and 5 points are frozen.
-4. With no responder online, the request remains queued and no assistant content
-   is emitted.
+4. With fallback configured and no human responder online, fallback starts
+   immediately and streams a visibly identified answer.
 5. A responder comes online and receives the oldest queued request.
 6. The responder types text and deletes it before 1000 ms; the requester sees no
    output.

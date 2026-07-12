@@ -389,6 +389,9 @@ func (b *Backend) RegisterResponder(token string) (string, <-chan core.AssignedR
 	if err != nil {
 		return "", nil, err
 	}
+	if err := b.heartbeat(ctx, sess.ID); err != nil {
+		return "", nil, err
+	}
 
 	cleanup, ch := b.assignmentChannel(ctx, sess.ID)
 	hbCtx, cancelHB := context.WithCancel(context.Background())
@@ -416,7 +419,6 @@ func (b *Backend) RegisterResponder(token string) (string, <-chan core.AssignedR
 }
 
 func (b *Backend) heartbeatLoop(ctx context.Context, sid string) {
-	_ = b.heartbeat(ctx, sid)
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	for {
