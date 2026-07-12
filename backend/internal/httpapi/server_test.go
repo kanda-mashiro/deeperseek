@@ -17,6 +17,18 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type emptyGuestBackend struct{ core.Backend }
+
+func (emptyGuestBackend) GuestSession(string) core.AuthResult { return core.AuthResult{} }
+
+type closedSubscriptionBackend struct{ core.Backend }
+
+func (closedSubscriptionBackend) Subscribe(string) (<-chan core.StreamEvent, func(), error) {
+	events := make(chan core.StreamEvent)
+	close(events)
+	return events, func() {}, nil
+}
+
 func TestHealthAndReadyReportMemoryMode(t *testing.T) {
 	svc := core.NewService()
 	server := httptest.NewServer(NewServer(svc).Handler())
@@ -84,6 +96,43 @@ func TestServerRateLimitsGuestCreation(t *testing.T) {
 	}
 	if statuses[3] != http.StatusTooManyRequests {
 		t.Fatalf("expected later guest creates to be rate limited, got %v", statuses)
+	}
+}
+
+func TestGuestCreationFailureReturnsServiceUnavailable(t *testing.T) {
+	server := httptest.NewServer(NewServer(emptyGuestBackend{Backend: core.NewService()}).Handler())
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/api/guest", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("guest: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestBlockingCompletionHandlesClosedSubscription(t *testing.T) {
+	svc := core.NewService()
+	guest := svc.GuestSession("")
+	server := httptest.NewServer(NewServer(closedSubscriptionBackend{Backend: svc}).Handler())
+	defer server.Close()
+
+	body := []byte(`{"model":"deeperseek-human","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+guest.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("completion: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
 }
 

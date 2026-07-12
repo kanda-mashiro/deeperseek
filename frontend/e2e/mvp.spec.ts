@@ -15,6 +15,22 @@ test("guest bootstrap failure has a visible retry path", async ({ page }) => {
   await expect(page.getByText("翻车了：service unavailable")).toBeVisible();
 });
 
+test("an unexpectedly closed answer stream leaves thinking state with an error", async ({ page }) => {
+  await page.route("**/v1/chat/completions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: ": connection closed\n\n"
+    });
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("request-prompt")).toBeVisible();
+  await page.getByTestId("request-prompt").fill("测试异常断流");
+  await page.getByTestId("request-send").click();
+  await expect(page.getByTestId("thinking-mark")).toHaveCount(0);
+  await expect(page.getByText("回答通道提前断开了，请重试。")).toBeVisible();
+});
+
 test("guest can ask immediately without nickname and sees thinking until finish", async ({ browser }) => {
   const run = uniqueRun("guest");
   const requester = await newUserPage(browser);

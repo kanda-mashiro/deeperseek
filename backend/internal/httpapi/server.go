@@ -207,7 +207,13 @@ func (s *Server) handleGuest(w http.ResponseWriter, r *http.Request) {
 		Nickname string `json:"nickname"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	writeJSON(w, http.StatusCreated, s.svc.GuestSession(body.Nickname))
+	auth := s.svc.GuestSession(body.Nickname)
+	if auth.Token == "" {
+		slog.Error("guest session creation failed")
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "unable to create guest session")
+		return
+	}
+	writeJSON(w, http.StatusCreated, auth)
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {

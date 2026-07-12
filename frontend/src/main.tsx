@@ -176,7 +176,7 @@ function App() {
           <div>
             <h1>DeeperSeek</h1>
             <p>
-              真人兼容型假智能
+              真人回答
               <span className="human-badge">人工含量 100%</span>
             </p>
           </div>
@@ -211,7 +211,7 @@ function App() {
             onClick={() => setMode("request")}
           >
             <Sparkles size={16} />
-            审问 AI
+            <span className="control-label">审问 AI</span>
           </button>
           <button
             data-testid="mode-answer"
@@ -219,7 +219,7 @@ function App() {
             onClick={() => setMode("answer")}
           >
             <Wifi size={16} />
-            扮演 AI
+            <span className="control-label">扮演 AI</span>
           </button>
           {auth?.user.guest ? (
             <button
@@ -229,7 +229,7 @@ function App() {
               type="button"
             >
               <LogIn size={16} />
-              登录 / 注册
+              <span className="control-label auth-label">登录 / 注册</span>
             </button>
           ) : auth ? (
             <div className="mini-identity">
@@ -551,6 +551,7 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
 
     const controller = new AbortController();
     abortRef.current = controller;
+    let streamDone = false;
     try {
       const response = await fetch("/v1/chat/completions", {
         method: "POST",
@@ -573,6 +574,7 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
       refreshMe(auth.token).then(onAuth).catch(() => undefined);
       await readSSE(response.body, (event) => {
         if (event === "[DONE]") {
+          streamDone = true;
           setMessages((value) =>
             value.map((message) => (message.id === assistantID ? { ...message, status: "done" } : message))
           );
@@ -607,6 +609,9 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
           );
         }
       });
+      if (!streamDone) {
+        throw new Error("stream ended unexpectedly");
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setMessages((value) => value.filter((message) => message.id !== userID && message.id !== assistantID));
@@ -648,10 +653,10 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
 
   return (
     <section className="request-workspace with-sidebar">
-      <aside className="conv-sidebar">
-        <button className="primary new-chat" data-testid="new-chat" onClick={newChat} type="button">
+      <aside className={conversations.length === 0 ? "conv-sidebar empty" : "conv-sidebar"}>
+        <button className="ghost new-chat" data-testid="new-chat" onClick={newChat} type="button">
           <Sparkles size={16} />
-          新对话
+          <span className="control-label">新对话</span>
         </button>
         <div className="conv-list">
           {conversations.length === 0 ? (
@@ -677,9 +682,7 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
         <div className="conversation">
           {messages.length === 0 && (
             <div className="empty-hero">
-              <p className="empty-kicker">DEEPERSEEK · 人工含量 100%</p>
               <h2>问吧，后台真的有人。</h2>
-              <p className="muted">每个回答都由一位被迫营业的人类现场打字，延迟即诚意。</p>
               <div className="sample-chips">
                 {sampleQuestions.map((sample) => (
                   <button className="sample-chip" key={sample} onClick={() => setPrompt(sample)} type="button">
@@ -748,22 +751,28 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
             placeholder="问吧，看看哪个真人被迫装成 AI"
           />
           <div className="composer-footer">
-            <span>
-              {prompt.length.toLocaleString()} / {inputLimit.toLocaleString()}
-            </span>
-            <button className="primary" data-testid="request-send" onClick={ask} disabled={!canAsk}>
-              <Send size={18} />
-              发送
-            </button>
+            <span>{prompt.length > 0 ? `${prompt.length.toLocaleString()} / ${inputLimit.toLocaleString()}` : ""}</span>
             <button
-              className="ghost"
-              data-testid="request-cancel"
-              onClick={cancel}
-              disabled={!activeAssistant || activeAssistant.content.length > 0}
+              aria-label="发送问题"
+              className="primary composer-command"
+              data-testid="request-send"
+              disabled={!canAsk}
+              onClick={ask}
+              title="发送问题"
             >
-              <CircleStop size={18} />
-              撤回排队
+              <Send size={18} />
             </button>
+            {activeAssistant && activeAssistant.content.length === 0 && (
+              <button
+                aria-label="撤回排队"
+                className="ghost composer-command"
+                data-testid="request-cancel"
+                onClick={cancel}
+                title="撤回排队"
+              >
+                <CircleStop size={18} />
+              </button>
+            )}
           </div>
           {error && <p className="error">{error}</p>}
         </div>
@@ -1491,7 +1500,8 @@ function translateError(message: string) {
     "request is already completed": "这单已经收场了，不用再装。",
     "cannot skip after committed fragment": "已经开始装了，跳不掉，只能收工。",
     "websocket error": "回答通道断了，AI 工厂临时停电。",
-    "request timed out": "连接超时了，点一下就能重试。"
+    "request timed out": "连接超时了，点一下就能重试。",
+    "stream ended unexpectedly": "回答通道提前断开了，请重试。"
   };
   if (known[normalized]) {
     return known[normalized];

@@ -76,6 +76,9 @@ test("keeps animated controls consistent across required viewport sizes", async 
     await expect(page.getByTestId("auth-menu")).toBeVisible();
     await expect(page.getByTestId("mode-request")).toBeVisible();
     await expect(page.getByTestId("mode-answer")).toBeVisible();
+    const composerBox = await page.locator(".chat-composer").boundingBox();
+    expect(composerBox).not.toBeNull();
+    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(viewport.height);
     await expectNoHorizontalOverflow(page);
 
     await page.getByTestId("auth-menu").click();

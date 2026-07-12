@@ -157,7 +157,11 @@ func (s *Server) blockingChatCompletion(w http.ResponseWriter, r *http.Request, 
 			slog.Info("blocking chat client disconnected", "request_id", req.ID)
 			s.svc.CancelBeforeFirstFragment(req.ID)
 			return
-		case event := <-events:
+		case event, ok := <-events:
+			if !ok {
+				writeError(w, http.StatusServiceUnavailable, "stream_unavailable", "answer stream closed unexpectedly")
+				return
+			}
 			switch event.Type {
 			case core.StreamEventFragment:
 				content += event.Text
