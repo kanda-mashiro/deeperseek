@@ -2,6 +2,19 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 
 const password = "pass1234";
 
+test("guest bootstrap failure has a visible retry path", async ({ page }) => {
+  await page.route("**/api/guest", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { message: "service unavailable" } })
+    });
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("guest-retry-main")).toBeVisible();
+  await expect(page.getByText("翻车了：service unavailable")).toBeVisible();
+});
+
 test("guest can ask immediately without nickname and sees thinking until finish", async ({ browser }) => {
   const run = uniqueRun("guest");
   const requester = await newUserPage(browser);

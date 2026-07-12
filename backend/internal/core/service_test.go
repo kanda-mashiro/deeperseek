@@ -273,6 +273,62 @@ func TestStreamingTimeoutCompletesPartial(t *testing.T) {
 	}
 }
 
+func TestLateSubscribeReplaysLongAnswerWithoutDeadlockingService(t *testing.T) {
+	svc, sessionID := assignedService(t)
+	requestID := svc.activeByRes[sessionID]
+
+	for seq := int64(1); seq <= 80; seq++ {
+		if _, _, err := svc.SubmitFragment(sessionID, seq, "x"); err != nil {
+			t.Fatalf("submit fragment %d: %v", seq, err)
+		}
+	}
+	if err := svc.Finish(sessionID); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	type subscription struct {
+		events      <-chan StreamEvent
+		unsubscribe func()
+		err         error
+	}
+	result := make(chan subscription, 1)
+	go func() {
+		events, unsubscribe, err := svc.Subscribe(requestID)
+		result <- subscription{events: events, unsubscribe: unsubscribe, err: err}
+	}()
+
+	var sub subscription
+	select {
+	case sub = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("late subscription deadlocked while replaying more than 64 fragments")
+	}
+	if sub.err != nil {
+		t.Fatalf("subscribe: %v", sub.err)
+	}
+	defer sub.unsubscribe()
+
+	fragment := <-sub.events
+	if fragment.Type != StreamEventFragment || len(fragment.Text) != 80 {
+		t.Fatalf("unexpected replay event: type=%s len=%d", fragment.Type, len(fragment.Text))
+	}
+	done := <-sub.events
+	if done.Type != StreamEventDone || done.FinishReason != FinishStop {
+		t.Fatalf("unexpected done event: %+v", done)
+	}
+
+	guestCreated := make(chan struct{})
+	go func() {
+		svc.GuestSession("")
+		close(guestCreated)
+	}()
+	select {
+	case <-guestCreated:
+	case <-time.After(time.Second):
+		t.Fatal("service mutex remained locked after historical replay")
+	}
+}
+
 func TestDisconnectBeforeAndAfterFragment(t *testing.T) {
 	svc, sessionID := assignedService(t)
 	requestID := svc.activeByRes[sessionID]

@@ -519,8 +519,11 @@ func (s *Service) Subscribe(requestID string) (<-chan StreamEvent, func(), error
 		s.subscribers[requestID] = make(map[chan StreamEvent]struct{})
 	}
 	s.subscribers[requestID][ch] = struct{}{}
-	for _, fragment := range s.fragments[requestID] {
-		ch <- StreamEvent{Type: StreamEventFragment, RequestID: requestID, Text: fragment.Text}
+	// A late subscriber only needs the accumulated answer, not the original
+	// chunk boundaries. Replaying every historical fragment while holding the
+	// service mutex can fill this channel and deadlock every stateful endpoint.
+	if answer := s.answerTextLocked(requestID); answer != "" {
+		ch <- StreamEvent{Type: StreamEventFragment, RequestID: requestID, Text: answer}
 	}
 	if isTerminal(req.Status) {
 		ch <- StreamEvent{Type: StreamEventDone, RequestID: requestID, FinishReason: req.FinishReason}

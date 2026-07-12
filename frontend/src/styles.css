@@ -455,6 +455,23 @@ button:disabled {
   animation: panel-in 320ms ease both;
 }
 
+.boot-panel p {
+  margin: 0;
+}
+
+.boot-panel.boot-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: var(--error);
+}
+
+.boot-panel .primary {
+  flex: 0 0 auto;
+}
+
 label {
   display: grid;
   gap: 7px;

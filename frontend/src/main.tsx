@@ -100,6 +100,7 @@ function App() {
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authOpen, setAuthOpen] = useState(false);
   const [booting, setBooting] = useState(true);
+  const [bootError, setBootError] = useState("");
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(storedThemeChoice);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(systemThemeNow);
   const resolvedTheme = themeChoice === "system" ? systemTheme : themeChoice;
@@ -145,9 +146,13 @@ function App() {
 
   const startGuest = () => {
     setBooting(true);
-    api<AuthResult>("/api/guest", { method: "POST", body: {} })
+    setBootError("");
+    api<AuthResult>("/api/guest", { method: "POST", body: {}, timeoutMs: 12_000 })
       .then(saveAuth)
-      .catch(() => setBooting(false));
+      .catch((err) => {
+        setBootError(errorMessage(err));
+        setBooting(false);
+      });
   };
 
   const beginAuth = (nextMode: AuthMode) => {
@@ -237,8 +242,14 @@ function App() {
               </button>
             </div>
           ) : (
-            <button className="auth-menu-button" disabled type="button">
-              生成游客中
+            <button
+              className="auth-menu-button"
+              data-testid="guest-retry"
+              disabled={booting}
+              onClick={startGuest}
+              type="button"
+            >
+              {booting ? "生成游客中" : "重试进入"}
             </button>
           )}
         </div>
@@ -257,7 +268,14 @@ function App() {
       )}
 
       {!auth || booting ? (
-        <section className="boot-panel">正在捏造游客身份，别急，假 AI 也要热身。</section>
+        <section className={bootError ? "boot-panel boot-error" : "boot-panel"}>
+          <p>{booting ? "正在捏造游客身份，马上就好。" : bootError}</p>
+          {!booting && (
+            <button className="primary" data-testid="guest-retry-main" onClick={startGuest} type="button">
+              重新进入
+            </button>
+          )}
+        </section>
       ) : mode === "request" ? (
         <RequestPanel auth={auth} onAuth={setAuth} />
       ) : (
@@ -1411,20 +1429,32 @@ const InlineAnswerEditor = forwardRef<
 
 async function api<T>(
   path: string,
-  options: { method?: string; token?: string; body?: unknown } = {}
+  options: { method?: string; token?: string; body?: unknown; timeoutMs?: number } = {}
 ): Promise<T> {
-  const response = await fetch(path, {
-    method: options.method ?? "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {})
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
-  });
-  if (!response.ok) {
-    throw new Error(await responseError(response));
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
+  try {
+    const response = await fetch(path, {
+      method: options.method ?? "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.token ? { Authorization: `Bearer ${options.token}` } : {})
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(await responseError(response));
+    }
+    return response.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("request timed out");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return response.json();
 }
 
 async function refreshMe(token: string) {
@@ -1460,7 +1490,8 @@ function translateError(message: string) {
     "request not found": "这单查无踪影，回等锅位重新接活。",
     "request is already completed": "这单已经收场了，不用再装。",
     "cannot skip after committed fragment": "已经开始装了，跳不掉，只能收工。",
-    "websocket error": "回答通道断了，AI 工厂临时停电。"
+    "websocket error": "回答通道断了，AI 工厂临时停电。",
+    "request timed out": "连接超时了，点一下就能重试。"
   };
   if (known[normalized]) {
     return known[normalized];

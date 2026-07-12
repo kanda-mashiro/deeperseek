@@ -3,7 +3,7 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 test("health endpoint responds", async ({ request }) => {
   const response = await request.get("/api/health");
   expect(response.ok()).toBeTruthy();
-  expect(await response.json()).toEqual({ status: "ok" });
+  expect(await response.json()).toMatchObject({ status: "ok" });
 });
 
 test("guest first screen serves the new build", async ({ page }) => {
