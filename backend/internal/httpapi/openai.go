@@ -16,6 +16,7 @@ type chatCompletionRequest struct {
 	Stream         bool           `json:"stream"`
 	MaxTokens      int            `json:"max_tokens"`
 	ConversationID string         `json:"conversation_id,omitempty"`
+	AllowAIAnswers *bool          `json:"allow_ai_answers,omitempty"`
 }
 
 type chatCompletionResponse struct {
@@ -53,7 +54,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		body.Model = "deeperseek-human"
 	}
 	token := bearerToken(r)
-	req, err := s.svc.CreateRequest(r.Context(), token, body.Model, body.Messages, body.MaxTokens)
+	allowAIAnswers := body.AllowAIAnswers == nil || *body.AllowAIAnswers
+	req, err := s.svc.CreateRequest(r.Context(), token, body.Model, body.Messages, body.MaxTokens, allowAIAnswers)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -123,7 +125,11 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 			}
 			switch event.Type {
 			case core.StreamEventFragment:
-				writeSSEData(w, streamChunk(req, map[string]string{"content": event.Text}, nil))
+				chunk := streamChunk(req, map[string]string{"content": event.Text}, nil)
+				if snap, _, err := s.svc.RequestSnapshot(req.ID); err == nil {
+					chunk.ResponderKind = snap.ResponderKind
+				}
+				writeSSEData(w, chunk)
 				flusher.Flush()
 			case core.StreamEventDone:
 				reason := event.FinishReason

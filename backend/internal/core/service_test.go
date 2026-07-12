@@ -524,6 +524,94 @@ func TestPersonaSessionStampsSourceAndSkipsBoard(t *testing.T) {
 	}
 }
 
+func TestRequestCanRejectAIAnswers(t *testing.T) {
+	svc := NewService()
+	requester := svc.GuestSession("requester")
+	persona := svc.PersonaSession("persona responder")
+	personaID, personaAssignments, err := svc.RegisterResponder(persona.Token)
+	if err != nil {
+		t.Fatalf("register persona responder: %v", err)
+	}
+	if err := svc.MarkResponderAvailable(personaID); err != nil {
+		t.Fatalf("mark persona available: %v", err)
+	}
+
+	req, err := svc.CreateRequest(context.Background(), requester.Token, "m", []Message{{Role: "user", Content: "human only"}}, 0, false)
+	if err != nil {
+		t.Fatalf("create human-only request: %v", err)
+	}
+	if req.AllowAIAnswers {
+		t.Fatal("request should reject AI answers")
+	}
+	select {
+	case assignment := <-personaAssignments:
+		t.Fatalf("persona must not receive human-only request: %+v", assignment)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, _, ok := svc.AcquireFallbackAssignment(req.ID); ok {
+		t.Fatal("fallback must not acquire a request that rejects AI answers")
+	}
+
+	human := svc.GuestSession("human responder")
+	humanID, humanAssignments, err := svc.RegisterResponder(human.Token)
+	if err != nil {
+		t.Fatalf("register human responder: %v", err)
+	}
+	if err := svc.MarkResponderAvailable(humanID); err != nil {
+		t.Fatalf("mark human available: %v", err)
+	}
+	select {
+	case assignment := <-humanAssignments:
+		if assignment.RequestID != req.ID || assignment.RequesterKind != KindHuman {
+			t.Fatalf("unexpected human assignment: %+v", assignment)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("human responder should receive human-only request")
+	}
+}
+
+func TestResponderCanRejectAIQuestionsWithoutBlockingHumanQueue(t *testing.T) {
+	svc := NewService()
+	personaRequester := svc.PersonaSession("persona requester")
+	humanRequester := svc.GuestSession("human requester")
+	aiReq, err := svc.CreateRequest(context.Background(), personaRequester.Token, "m", []Message{{Role: "user", Content: "AI question"}}, 0)
+	if err != nil {
+		t.Fatalf("create persona request: %v", err)
+	}
+	humanReq, err := svc.CreateRequest(context.Background(), humanRequester.Token, "m", []Message{{Role: "user", Content: "human question"}}, 0)
+	if err != nil {
+		t.Fatalf("create human request: %v", err)
+	}
+
+	humanOnly := svc.GuestSession("human-only responder")
+	humanOnlyID, humanOnlyAssignments, _ := svc.RegisterResponder(humanOnly.Token)
+	if err := svc.MarkResponderAvailable(humanOnlyID, false); err != nil {
+		t.Fatalf("mark human-only responder available: %v", err)
+	}
+	select {
+	case assignment := <-humanOnlyAssignments:
+		if assignment.RequestID != humanReq.ID || assignment.RequesterKind != KindHuman {
+			t.Fatalf("expected compatible human request, got %+v", assignment)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("human-only responder should receive the later compatible human request")
+	}
+
+	aiCapable := svc.GuestSession("AI-capable responder")
+	aiCapableID, aiCapableAssignments, _ := svc.RegisterResponder(aiCapable.Token)
+	if err := svc.MarkResponderAvailable(aiCapableID); err != nil {
+		t.Fatalf("mark AI-capable responder available: %v", err)
+	}
+	select {
+	case assignment := <-aiCapableAssignments:
+		if assignment.RequestID != aiReq.ID || assignment.RequesterKind != KindAIPersona {
+			t.Fatalf("expected preserved persona request, got %+v", assignment)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AI-capable responder should receive the preserved persona request")
+	}
+}
+
 func TestOnlineHumanResponderCountExcludesPersonas(t *testing.T) {
 	svc := NewService()
 	human := svc.GuestSession("human")

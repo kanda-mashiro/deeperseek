@@ -16,6 +16,9 @@
 - Public spectator board with privacy-safe request metadata.
 - Optional AI personas that participate through the same queue and responder
   protocol while remaining visibly identified.
+- Requesters and responders can independently opt out of AI answers or AI
+  questions. Both preferences default to enabled and AI-generated traffic is
+  marked as `AI回答` or `AI提问` in the UI.
 - Optional fallback responder that answers through an OpenAI-compatible upstream:
   immediately when no human responder is online, or after 10 seconds when a
   human responder is connected but has not started answering.
@@ -47,6 +50,11 @@ starting the backend. The default fallback base URL is `https://oneapi.43ever.me
 and the default fallback model is `deepseek/deepseek-v4-flash`. The configured
 delay applies only when at least one human responder is online and to retries
 after a failed fallback attempt.
+
+The OpenAI-compatible request accepts the optional extension
+`allow_ai_answers` (default `true`). Responder `available` WebSocket commands
+accept `accept_ai_questions` (default `true`). These preferences are enforced by
+both the in-memory and PostgreSQL + Redis matchers.
 
 Optional fallback variables:
 
@@ -94,6 +102,8 @@ The E2E suite covers:
 - Answer it from the Simulate AI UI.
 - Stream the human answer back to the requester.
 - Use the fallback responder when no human accepts a queued request.
+- Opt out of AI questions or answers without blocking compatible human work.
+- Display explicit `AI提问` and `AI回答` source markers.
 - Keep a thinking animation visible until finish.
 - Keep committed answer text inline while making it immutable.
 - Preserve Chinese IME composition behavior in the responder editor.

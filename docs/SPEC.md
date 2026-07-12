@@ -1,6 +1,6 @@
 # DeeperSeek Product Specification
 
-Status: Frozen v0.6
+Status: Frozen v0.7
 
 This document is the source of truth for product behavior after it is frozen.
 Implementation and tests must be derived from this document, not the other way
@@ -206,6 +206,11 @@ fragment, fallback must stop without emitting assistant content. A failed or
 contended immediate attempt must return to the configured delay before retrying;
 it must not spin in a zero-delay loop.
 
+Every request carries an `allow_ai_answers` preference. It defaults to `true`.
+When it is `false`, neither an AI persona responder nor the fallback responder
+may acquire that request; it remains queued until a real human responder accepts
+it or the requester cancels it.
+
 ### 4.3 Matching
 
 A responder can have at most one active assignment at a time.
@@ -216,6 +221,16 @@ contract is oldest-first for fairness and testability.
 
 Assignment must be atomic across multiple backend instances. The same request
 must not be assigned to multiple responders.
+
+Every responder availability declaration carries an `accept_ai_questions`
+preference. It defaults to `true`. When it is `false`, requests whose requester
+kind is `ai_persona` must be skipped for that responder without blocking later
+human questions in the queue. An AI persona responder itself accepts only human
+questions, preventing persona-to-persona loops.
+
+Compatibility filtering must preserve fairness: each responder receives the
+oldest compatible queued request, and skipping an incompatible request must not
+remove or reorder it for another compatible responder.
 
 ### 4.4 Skip Before First Fragment
 
@@ -461,6 +476,19 @@ idea that the product is intelligent.
 The Request AI chat view must support multi-turn conversation. Each new request
 must include prior user and assistant messages from the current chat.
 
+Both participation preferences must be visible, user-selectable controls and
+must default to enabled:
+
+- Request AI exposes `允许 AI 回答` and sends its value as
+  `allow_ai_answers` on each new request.
+- Simulate AI exposes `接收 AI 提问` and sends its value on each availability
+  declaration. Changing it while online applies to the next assignment.
+
+The selected values persist in the current browser. A requester receiving an AI
+persona or fallback answer sees a prominent `AI回答` marker. A responder assigned
+a request created by an AI persona sees a prominent `AI提问` marker. Human
+questions and human answers do not show those markers.
+
 The UI must support desktop and mobile layouts. Minimum target viewport widths:
 
 - 360 px.
@@ -519,6 +547,11 @@ Required:
 Required:
 
 - oldest queued request is assigned first.
+- a request that disables AI answers cannot be acquired by an AI persona or the
+  fallback responder, but remains assignable to a human responder.
+- a responder that disables AI questions skips persona requests and can still
+  receive the oldest compatible human request.
+- default participation preferences allow persona questions and answers.
 - one responder cannot receive two active assignments.
 - one request cannot be assigned to two responders.
 - request returns to queue when responder disconnects before first fragment.
@@ -536,6 +569,8 @@ Required:
   OpenAI-compatible responder immediately.
 - a request created while a human responder is online keeps the configured
   fallback delay.
+- `allow_ai_answers = false` prevents fallback from calling its upstream and the
+  request remains available for a human responder.
 - fallback responder output is streamed as paced chunks even if the upstream
   sends a large delta quickly.
 - a request assigned to a human responder before 10 seconds is not answered by
@@ -559,6 +594,12 @@ Required:
 - Chinese IME composition can produce draft text without committing intermediate
   composition text.
 - multi-turn chat sends prior user and assistant messages to the responder.
+- both AI participation controls default to enabled and persist in the browser.
+- disabling AI answers prevents fallback/persona output while preserving human
+  assignment.
+- disabling AI questions prevents a responder from receiving persona requests.
+- AI-generated answers show `AI回答`; persona-generated questions show
+  `AI提问`; human-only flows show neither marker.
 - streamed assistant Markdown renders headings, lists, links, tables, and code.
 - raw HTML in assistant Markdown is not executed or inserted as live DOM.
 - spectator board answers use the same safe Markdown renderer.

@@ -82,6 +82,7 @@ type Request struct {
 	RequesterSessionID string
 	RequesterGuest     bool
 	RequesterKind      string
+	AllowAIAnswers     bool
 	Messages           []Message
 	Model              string
 	Status             RequestStatus
@@ -160,9 +161,10 @@ type StreamEvent struct {
 }
 
 type AssignedRequest struct {
-	RequestID string    `json:"request_id"`
-	Messages  []Message `json:"messages"`
-	CreatedAt time.Time `json:"created_at"`
+	RequestID     string    `json:"request_id"`
+	RequesterKind string    `json:"requester_kind"`
+	Messages      []Message `json:"messages"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // BoardTicket is the spectator-safe projection of a request: no account, token,

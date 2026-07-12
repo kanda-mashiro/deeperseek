@@ -49,6 +49,7 @@ type Service struct {
 	activeByRes map[string]string
 	available   []string
 	responders  map[string]chan AssignedRequest
+	acceptAI    map[string]bool
 	subscribers map[string]map[chan StreamEvent]struct{}
 
 	conversations map[string]*Conversation
@@ -65,6 +66,7 @@ func NewService() *Service {
 		seqSeen:        make(map[string]map[string]Fragment),
 		activeByRes:    make(map[string]string),
 		responders:     make(map[string]chan AssignedRequest),
+		acceptAI:       make(map[string]bool),
 		subscribers:    make(map[string]map[chan StreamEvent]struct{}),
 		conversations:  make(map[string]*Conversation),
 		convMessages:   make(map[string][]ConversationMessage),
@@ -157,7 +159,7 @@ func (s *Service) Me(token string) (AuthResult, error) {
 	return s.authResultLocked(session), nil
 }
 
-func (s *Service) CreateRequest(ctx context.Context, token string, model string, messages []Message, maxOutputChars int) (*Request, error) {
+func (s *Service) CreateRequest(ctx context.Context, token string, model string, messages []Message, maxOutputChars int, allowAIAnswers ...bool) (*Request, error) {
 	if err := validateInput(messages); err != nil {
 		return nil, err
 	}
@@ -182,12 +184,14 @@ func (s *Service) CreateRequest(ctx context.Context, token string, model string,
 	}
 
 	now := time.Now().UTC()
+	allowAI := len(allowAIAnswers) == 0 || allowAIAnswers[0]
 	req := &Request{
 		ID:                 newID("req"),
 		RequesterID:        session.UserID,
 		RequesterSessionID: session.ID,
 		RequesterGuest:     session.Guest,
 		RequesterKind:      KindOrHuman(session.Kind),
+		AllowAIAnswers:     allowAI,
 		BoardEligible:      session.Guest && session.Kind != KindAIPersona, // real guests only; personas never on the board
 		Messages:           append([]Message(nil), messages...),
 		Model:              model,
@@ -226,6 +230,7 @@ func (s *Service) UnregisterResponder(sessionID string) {
 		delete(s.responders, sessionID)
 		close(ch)
 	}
+	delete(s.acceptAI, sessionID)
 	s.removeAvailableLocked(sessionID)
 	now := time.Now().UTC()
 	if requestID := s.activeByRes[sessionID]; requestID != "" {
@@ -240,7 +245,7 @@ func (s *Service) UnregisterResponder(sessionID string) {
 	}
 }
 
-func (s *Service) MarkResponderAvailable(sessionID string) error {
+func (s *Service) MarkResponderAvailable(sessionID string, acceptAIQuestions ...bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -250,6 +255,7 @@ func (s *Service) MarkResponderAvailable(sessionID string) error {
 	if s.activeByRes[sessionID] != "" {
 		return nil
 	}
+	s.acceptAI[sessionID] = len(acceptAIQuestions) == 0 || acceptAIQuestions[0]
 	if !contains(s.available, sessionID) {
 		s.available = append(s.available, sessionID)
 	}
@@ -262,7 +268,7 @@ func (s *Service) AcquireFallbackAssignment(requestID string) (string, AssignedR
 	defer s.mu.Unlock()
 
 	req := s.requests[requestID]
-	if req == nil || req.Status != StatusQueued || isTerminal(req.Status) || len(s.fragments[requestID]) > 0 {
+	if req == nil || !req.AllowAIAnswers || req.Status != StatusQueued || isTerminal(req.Status) || len(s.fragments[requestID]) > 0 {
 		return "", AssignedRequest{}, false
 	}
 
@@ -279,9 +285,10 @@ func (s *Service) AcquireFallbackAssignment(requestID string) (string, AssignedR
 	s.activeByRes[sessionID] = requestID
 
 	return sessionID, AssignedRequest{
-		RequestID: req.ID,
-		Messages:  append([]Message(nil), req.Messages...),
-		CreatedAt: req.CreatedAt,
+		RequestID:     req.ID,
+		RequesterKind: req.RequesterKind,
+		Messages:      append([]Message(nil), req.Messages...),
+		CreatedAt:     req.CreatedAt,
 	}, true
 }
 
@@ -293,7 +300,7 @@ func (s *Service) FallbackStillWanted(requestID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req := s.requests[requestID]
-	return req != nil && !isTerminal(req.Status) && len(s.fragments[requestID]) == 0
+	return req != nil && req.AllowAIAnswers && !isTerminal(req.Status) && len(s.fragments[requestID]) == 0
 }
 
 func (s *Service) RunTimeoutSweeper(ctx context.Context, interval time.Duration) {
@@ -734,24 +741,18 @@ func (s *Service) addLedgerLocked(userID, requestID, kind string, delta int, now
 }
 
 func (s *Service) tryAssignLocked(now time.Time) {
-	for len(s.queue) > 0 && len(s.available) > 0 {
-		requestID := s.queue[0]
-		s.queue = s.queue[1:]
+	for {
+		queueIndex, responderIndex := s.compatiblePairLocked()
+		if queueIndex < 0 || responderIndex < 0 {
+			return
+		}
+		requestID := s.queue[queueIndex]
+		s.queue = append(s.queue[:queueIndex], s.queue[queueIndex+1:]...)
+		responderID := s.available[responderIndex]
+		s.available = append(s.available[:responderIndex], s.available[responderIndex+1:]...)
 		req := s.requests[requestID]
-		if req == nil || isTerminal(req.Status) || req.Status == StatusStreaming {
-			continue
-		}
-
-		responderID := s.available[0]
-		s.available = s.available[1:]
-		ch, ok := s.responders[responderID]
-		if !ok {
-			continue
-		}
+		ch := s.responders[responderID]
 		session := s.sessionByIDLocked(responderID)
-		if session == nil {
-			continue
-		}
 		req.Status = StatusAssigned
 		req.ResponderSessionID = responderID
 		req.ResponderGuest = session.Guest
@@ -762,9 +763,10 @@ func (s *Service) tryAssignLocked(now time.Time) {
 		s.activeByRes[responderID] = requestID
 
 		assignment := AssignedRequest{
-			RequestID: req.ID,
-			Messages:  append([]Message(nil), req.Messages...),
-			CreatedAt: req.CreatedAt,
+			RequestID:     req.ID,
+			RequesterKind: req.RequesterKind,
+			Messages:      append([]Message(nil), req.Messages...),
+			CreatedAt:     req.CreatedAt,
 		}
 		select {
 		case ch <- assignment:
@@ -772,6 +774,38 @@ func (s *Service) tryAssignLocked(now time.Time) {
 			s.requeueLocked(req, now)
 		}
 	}
+}
+
+func (s *Service) compatiblePairLocked() (int, int) {
+	for queueIndex, requestID := range s.queue {
+		req := s.requests[requestID]
+		if req == nil || isTerminal(req.Status) || req.Status == StatusStreaming {
+			continue
+		}
+		for responderIndex, responderID := range s.available {
+			if s.activeByRes[responderID] != "" || s.responders[responderID] == nil {
+				continue
+			}
+			session := s.sessionByIDLocked(responderID)
+			if session == nil {
+				continue
+			}
+			responderKind := KindOrHuman(session.Kind)
+			if responderKind == KindAIPersona && !req.AllowAIAnswers {
+				continue
+			}
+			if req.RequesterKind == KindAIPersona && (responderKind == KindAIPersona || !s.responderAcceptsAILocked(responderID)) {
+				continue
+			}
+			return queueIndex, responderIndex
+		}
+	}
+	return -1, -1
+}
+
+func (s *Service) responderAcceptsAILocked(sessionID string) bool {
+	accept, ok := s.acceptAI[sessionID]
+	return !ok || accept
 }
 
 func (s *Service) requeueLocked(req *Request, now time.Time) {

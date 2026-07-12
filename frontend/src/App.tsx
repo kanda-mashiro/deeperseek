@@ -43,6 +43,7 @@ type Message = {
 
 type AssignedRequest = {
   request_id: string;
+  requester_kind: string;
   messages: Message[];
   created_at: string;
 };
@@ -91,6 +92,8 @@ type ResolvedTheme = "light" | "dark";
 const tokenStorageKey = "deeperseek_token";
 const themeStorageKey = "deeperseek_theme";
 const convStorageKey = "deeperseek_conversation";
+const allowAIAnswersStorageKey = "deeperseek_allow_ai_answers";
+const acceptAIQuestionsStorageKey = "deeperseek_accept_ai_questions";
 const inputLimit = 100000;
 const outputLimit = 128000;
 
@@ -333,6 +336,33 @@ function ThemeButton({
   );
 }
 
+function PreferenceToggle({
+  checked,
+  label,
+  onChange,
+  testID
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+  testID: string;
+}) {
+  return (
+    <label className="preference-toggle">
+      <input
+        checked={checked}
+        data-testid={testID}
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+      />
+      <span aria-hidden="true" className="toggle-track">
+        <span />
+      </span>
+      <span>{label}</span>
+    </label>
+  );
+}
+
 function AuthPanel({
   mode,
   onAuth,
@@ -466,7 +496,12 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConv, setActiveConv] = useState<string>(() => window.localStorage.getItem(convStorageKey) ?? "");
   const [error, setError] = useState("");
+  const [allowAIAnswers, setAllowAIAnswers] = useState(() => storedBoolean(allowAIAnswersStorageKey, true));
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(allowAIAnswersStorageKey, String(allowAIAnswers));
+  }, [allowAIAnswers]);
 
   const loadConversations = () =>
     api<{ conversations: Conversation[] }>("/api/conversations", { token: auth.token })
@@ -585,6 +620,7 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
           stream: true,
           messages: [...priorMessages, { role: "user", content: question }],
           max_tokens: outputLimit,
+          allow_ai_answers: allowAIAnswers,
           conversation_id: convID || undefined
         }),
         signal: controller.signal
@@ -611,18 +647,18 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
           );
         }
         const delta = chunk.choices?.[0]?.delta?.content ?? "";
+        const kind = chunk.responder_kind as string | undefined;
         if (delta) {
           setMessages((value) =>
             value.map((message) =>
               message.id === assistantID
-                ? { ...message, status: "streaming", content: message.content + delta }
+                ? { ...message, status: "streaming", content: message.content + delta, sourceKind: kind ?? message.sourceKind }
                 : message
             )
           );
         }
         const finish = chunk.choices?.[0]?.finish_reason;
         if (finish) {
-          const kind = chunk.responder_kind as string | undefined;
           setMessages((value) =>
             value.map((message) =>
               message.id === assistantID ? { ...message, status: "done", sourceKind: kind ?? message.sourceKind } : message
@@ -723,6 +759,11 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
                 <span className="bubble-tag">
                   <Bot size={13} />
                   {assistantTagCopy(message.status, message.sourceKind)}
+                  {isAIKind(message.sourceKind) && (
+                    <span className="ai-source-badge answer" data-testid="ai-answer-badge">
+                      AI回答
+                    </span>
+                  )}
                 </span>
                 {message.content && <MarkdownContent content={message.content} testID="request-answer" />}
                 {(message.status === "waiting" || message.status === "streaming") && <WaitingLine />}
@@ -771,6 +812,14 @@ function RequestPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthR
             }}
             placeholder="问吧，看看哪个真人被迫装成 AI"
           />
+          <div className="participation-row">
+            <PreferenceToggle
+              checked={allowAIAnswers}
+              label="允许 AI 回答"
+              onChange={setAllowAIAnswers}
+              testID="request-allow-ai-answers"
+            />
+          </div>
           <div className="composer-footer">
             <span>{prompt.length > 0 ? `${prompt.length.toLocaleString()} / ${inputLimit.toLocaleString()}` : ""}</span>
             <button
@@ -813,6 +862,10 @@ function assistantTagCopy(status?: string, sourceKind?: string) {
   return "真人作答 · 已交付";
 }
 
+function isAIKind(kind?: string) {
+  return kind === "ai_persona" || kind === "fallback";
+}
+
 function WaitingLine() {
   return (
     <span className="thinking-line" data-testid="thinking-mark">
@@ -838,10 +891,21 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
   const [clientSeq, setClientSeq] = useState(1);
   const [error, setError] = useState("");
   const [activity, setActivity] = useState("离线摸鱼");
+  const [acceptAIQuestions, setAcceptAIQuestions] = useState(() => storedBoolean(acceptAIQuestionsStorageKey, true));
   const wsRef = useRef<WebSocket | null>(null);
   const editorRef = useRef<AnswerEditorHandle | null>(null);
   const pendingCommitRef = useRef("");
   const clientSeqRef = useRef(1);
+  const acceptAIQuestionsRef = useRef(acceptAIQuestions);
+
+  useEffect(() => {
+    acceptAIQuestionsRef.current = acceptAIQuestions;
+    window.localStorage.setItem(acceptAIQuestionsStorageKey, String(acceptAIQuestions));
+  }, [acceptAIQuestions]);
+
+  const sendAvailable = (ws: WebSocket) => {
+    ws.send(JSON.stringify({ type: "available", accept_ai_questions: acceptAIQuestionsRef.current }));
+  };
 
   const trackPendingCommit = (value: string) => {
     pendingCommitRef.current = value;
@@ -862,7 +926,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     setActivity("在线等锅");
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "available" }));
+      sendAvailable(ws);
     }
   };
 
@@ -898,7 +962,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     ws.onopen = () => {
       setConnected(true);
       setActivity("在线等锅");
-      ws.send(JSON.stringify({ type: "available" }));
+      sendAvailable(ws);
     };
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
@@ -939,6 +1003,15 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     wsRef.current?.close();
   };
 
+  const changeAcceptAIQuestions = (value: boolean) => {
+    acceptAIQuestionsRef.current = value;
+    setAcceptAIQuestions(value);
+    const ws = wsRef.current;
+    if (!assignment && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "available", accept_ai_questions: value }));
+    }
+  };
+
   useEffect(() => () => wsRef.current?.close(), []);
 
   useEffect(() => {
@@ -976,6 +1049,12 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
           <p>{auth.user.guest ? "游客回答，积分只在这场梦里有效" : "持久积分，数据库替你记这笔辛苦钱"}</p>
         </div>
         <div className="operator-actions">
+          <PreferenceToggle
+            checked={acceptAIQuestions}
+            label="接收 AI 提问"
+            onChange={changeAcceptAIQuestions}
+            testID="answer-accept-ai-questions"
+          />
           <span className="shift-meter" title="本次在线已交付的回答数">
             本班 {shiftCount} 单
           </span>
@@ -1019,7 +1098,14 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
       {tab === "work" && (
       <article className="answer-thread-pane">
         <div className="pane-head">
-          <h3>对话现场</h3>
+          <div className="pane-title">
+            <h3>对话现场</h3>
+            {assignment?.requester_kind === "ai_persona" && (
+              <span className="ai-source-badge question" data-testid="ai-question-badge">
+                AI提问
+              </span>
+            )}
+          </div>
           {assignment && (
             <span className="ticket-meta">
               工单 #{assignment.request_id.slice(-6)} · 已等 {queueWait}s
@@ -1547,6 +1633,13 @@ function storedThemeChoice(): ThemeChoice {
     return value;
   }
   return "system";
+}
+
+function storedBoolean(key: string, fallback: boolean) {
+  const value = window.localStorage.getItem(key);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
 }
 
 function systemThemeNow(): ResolvedTheme {

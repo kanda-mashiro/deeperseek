@@ -8,9 +8,10 @@ import (
 )
 
 type wsInbound struct {
-	Type      string `json:"type"`
-	ClientSeq int64  `json:"client_seq,omitempty"`
-	Text      string `json:"text,omitempty"`
+	Type              string `json:"type"`
+	ClientSeq         int64  `json:"client_seq,omitempty"`
+	Text              string `json:"text,omitempty"`
+	AcceptAIQuestions *bool  `json:"accept_ai_questions,omitempty"`
 }
 
 func (s *Server) handleAnswerWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -50,10 +51,11 @@ func (s *Server) handleAnswerWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		for assignment := range assignments {
 			if !write(map[string]any{
-				"type":       "assigned",
-				"request_id": assignment.RequestID,
-				"messages":   assignment.Messages,
-				"created_at": assignment.CreatedAt,
+				"type":           "assigned",
+				"request_id":     assignment.RequestID,
+				"requester_kind": assignment.RequesterKind,
+				"messages":       assignment.Messages,
+				"created_at":     assignment.CreatedAt,
 			}) {
 				return
 			}
@@ -68,7 +70,8 @@ func (s *Server) handleAnswerWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		switch msg.Type {
 		case "available":
-			err = s.svc.MarkResponderAvailable(sessionID)
+			acceptAIQuestions := msg.AcceptAIQuestions == nil || *msg.AcceptAIQuestions
+			err = s.svc.MarkResponderAvailable(sessionID, acceptAIQuestions)
 			if err == nil {
 				write(wsOK("available_ack"))
 			}

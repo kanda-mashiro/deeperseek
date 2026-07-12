@@ -220,6 +220,53 @@ func TestWebSocketPushesBalanceOnFinish(t *testing.T) {
 	}
 }
 
+func TestWebSocketCanRejectAIQuestions(t *testing.T) {
+	svc := core.NewService()
+	server := httptest.NewServer(NewServer(svc).Handler())
+	defer server.Close()
+
+	responder := svc.GuestSession("human responder")
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/answer?token=" + responder.Token
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{"type": "available", "accept_ai_questions": false}); err != nil {
+		t.Fatalf("available: %v", err)
+	}
+	var ack map[string]any
+	if err := conn.ReadJSON(&ack); err != nil || ack["type"] != "available_ack" {
+		t.Fatalf("available ack: msg=%v err=%v", ack, err)
+	}
+
+	persona := svc.PersonaSession("persona requester")
+	aiReq, err := svc.CreateRequest(context.Background(), persona.Token, "m", []core.Message{{Role: "user", Content: "AI question"}}, 0)
+	if err != nil {
+		t.Fatalf("create AI question: %v", err)
+	}
+	human := svc.GuestSession("human requester")
+	humanReq, err := svc.CreateRequest(context.Background(), human.Token, "m", []core.Message{{Role: "user", Content: "human question"}}, 0)
+	if err != nil {
+		t.Fatalf("create human question: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var assigned map[string]any
+	for assigned["type"] != "assigned" {
+		if err := conn.ReadJSON(&assigned); err != nil {
+			t.Fatalf("read assigned: %v", err)
+		}
+	}
+	if assigned["request_id"] != humanReq.ID || assigned["requester_kind"] != core.KindHuman {
+		t.Fatalf("unexpected assignment: %+v", assigned)
+	}
+	if snap, _, _ := svc.RequestSnapshot(aiReq.ID); snap.Status != core.StatusQueued {
+		t.Fatalf("AI question should remain queued, got %s", snap.Status)
+	}
+}
+
 func TestWebSocketRequiresToken(t *testing.T) {
 	svc := core.NewService()
 	server := httptest.NewServer(NewServer(svc).Handler())
@@ -575,6 +622,76 @@ func TestChatCompletionsFallbackKeepsDelayWhenHumanResponderOnline(t *testing.T)
 	}
 	if elapsed := time.Since(started); elapsed < 200*time.Millisecond {
 		t.Fatalf("fallback bypassed the human-first delay, elapsed=%s", elapsed)
+	}
+}
+
+func TestChatCompletionsCanDisableAIAnswers(t *testing.T) {
+	var upstreamCalls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"AI should not answer\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	svc := core.NewService()
+	server := httptest.NewServer(NewServerWithOptions(svc, ServerOptions{
+		Fallback: FallbackConfig{
+			Enabled:       true,
+			BaseURL:       upstream.URL,
+			APIKey:        "test-fallback-key",
+			Model:         "deepseek/deepseek-v4-flash",
+			Delay:         5 * time.Millisecond,
+			ChunkDelay:    time.Millisecond,
+			MaxChunkRunes: 16,
+			Client:        upstream.Client(),
+		},
+	}).Handler())
+	defer server.Close()
+
+	requester := svc.GuestSession("")
+	body := []byte(`{"model":"deeperseek-human","stream":true,"allow_ai_answers":false,"messages":[{"role":"user","content":"human only"}]}`)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+requester.Token)
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	time.Sleep(40 * time.Millisecond)
+	if got := atomic.LoadInt32(&upstreamCalls); got != 0 {
+		t.Fatalf("AI-answer opt-out still called fallback upstream %d times", got)
+	}
+
+	human := svc.GuestSession("human")
+	humanID, assignments, err := svc.RegisterResponder(human.Token)
+	if err != nil {
+		t.Fatalf("register human responder: %v", err)
+	}
+	defer svc.UnregisterResponder(humanID)
+	if err := svc.MarkResponderAvailable(humanID); err != nil {
+		t.Fatalf("mark human available: %v", err)
+	}
+	assignment := <-assignments
+	snap, _, err := svc.RequestSnapshot(assignment.RequestID)
+	if err != nil || snap.AllowAIAnswers {
+		t.Fatalf("request preference was not persisted: allow_ai=%v err=%v", snap.AllowAIAnswers, err)
+	}
+	if _, _, err := svc.SubmitFragment(humanID, 1, "human answer"); err != nil {
+		t.Fatalf("submit human answer: %v", err)
+	}
+	if err := svc.Finish(humanID); err != nil {
+		t.Fatalf("finish human answer: %v", err)
+	}
+	content, finish, done := readStreamForTest(t, resp)
+	if content != "human answer" || finish != string(core.FinishStop) || !done {
+		t.Fatalf("unexpected human-only stream: content=%q finish=%q done=%v", content, finish, done)
 	}
 }
 

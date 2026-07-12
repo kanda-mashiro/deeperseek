@@ -46,6 +46,7 @@ test("guest can ask immediately without nickname and sees thinking until finish"
     await requester.getByTestId("request-send").click();
 
     await expect(responder.getByTestId("answer-incoming")).toContainText(`Guest question ${run}`);
+    await expect(responder.getByTestId("ai-question-badge")).toHaveCount(0);
     await responder.getByTestId("answer-draft").fill("你是一头猪，");
     await expect(responder.getByTestId("answer-editor")).toContainText("你是一头猪，");
     await expect(responder.getByTestId("answer-committed")).toContainText("你是一头猪，", {
@@ -64,6 +65,7 @@ test("guest can ask immediately without nickname and sees thinking until finish"
 
     await responder.getByTestId("answer-finish").click();
     await expect(requester.getByTestId("thinking-mark")).toHaveCount(0);
+    await expect(requester.getByTestId("ai-answer-badge")).toHaveCount(0);
     await requester.getByTestId("reaction-like").click();
     await expect(requester.getByTestId("reaction-like")).toHaveClass(/selected/);
   } finally {

@@ -167,7 +167,7 @@ func (m *Manager) runResponder(ctx context.Context, sid string, assignments <-ch
 		delete(m.responders, sid)
 		m.mu.Unlock()
 	}()
-	_ = m.backend.MarkResponderAvailable(sid)
+	_ = m.backend.MarkResponderAvailable(sid, false)
 	for {
 		select {
 		case <-ctx.Done():
@@ -188,7 +188,7 @@ func (m *Manager) runResponder(ctx context.Context, sid string, assignments <-ch
 			if ctx.Err() != nil {
 				return
 			}
-			_ = m.backend.MarkResponderAvailable(sid)
+			_ = m.backend.MarkResponderAvailable(sid, false)
 		}
 	}
 }

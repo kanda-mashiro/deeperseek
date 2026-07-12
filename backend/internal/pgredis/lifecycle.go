@@ -22,7 +22,7 @@ type responderConn struct {
 
 // --- request creation ---
 
-func (b *Backend) CreateRequest(ctx context.Context, token, model string, messages []core.Message, maxOutputChars int) (*core.Request, error) {
+func (b *Backend) CreateRequest(ctx context.Context, token, model string, messages []core.Message, maxOutputChars int, allowAIAnswers ...bool) (*core.Request, error) {
 	total := 0
 	for _, m := range messages {
 		total += utf8.RuneCountInString(m.Content)
@@ -65,14 +65,18 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 	reqID := newID("req")
 	category := core.QuestionCategory(messages)
 	boardEligible := sess.Guest && sess.Kind != core.KindAIPersona // real guests only; personas never on the board
+	allowAI := len(allowAIAnswers) == 0 || allowAIAnswers[0]
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO requests (id, requester_id, requester_session_id, requester_guest, requester_kind, messages, model,
-			status, frozen_points, output_limit, reaction, board_eligible, question_category, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, $9, 'none', $10, $11, $12, $12)`,
-		reqID, sess.UserID, sess.ID, sess.Guest, core.KindOrHuman(sess.Kind), msgs, model, frozen, maxOutputChars, boardEligible, category, now); err != nil {
+			status, frozen_points, output_limit, reaction, board_eligible, question_category, allow_ai_answers, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, $9, 'none', $10, $11, $12, $13, $13)`,
+		reqID, sess.UserID, sess.ID, sess.Guest, core.KindOrHuman(sess.Kind), msgs, model, frozen, maxOutputChars, boardEligible, category, allowAI, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.setRequestRouting(context.Background(), reqID, core.KindOrHuman(sess.Kind), allowAI); err != nil {
 		return nil, err
 	}
 
@@ -87,7 +91,7 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 
 	return &core.Request{
 		ID: reqID, RequesterID: sess.UserID, RequesterSessionID: sess.ID, RequesterGuest: sess.Guest,
-		RequesterKind: core.KindOrHuman(sess.Kind), BoardEligible: boardEligible, Messages: messages, Model: model,
+		RequesterKind: core.KindOrHuman(sess.Kind), AllowAIAnswers: allowAI, BoardEligible: boardEligible, Messages: messages, Model: model,
 		Status: core.StatusQueued, FrozenPoints: frozen, OutputLimit: maxOutputChars, Reaction: core.ReactionNone,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
@@ -180,6 +184,7 @@ func (b *Backend) SubmitFragment(sessionID string, clientSeq int64, text string)
 	if reachedLimit {
 		_ = b.publishStream(ctx, req.ID, streamMessage{Kind: "done", Finish: string(core.FinishLength)})
 		_ = b.releaseLock(ctx, req.ID)
+		_ = b.clearRequestRouting(ctx, req.ID)
 	}
 	return frag, false, nil
 }
@@ -212,6 +217,7 @@ func (b *Backend) Finish(sessionID string) error {
 	}
 	_ = b.publishStream(ctx, req.ID, streamMessage{Kind: "done", Finish: string(core.FinishStop)})
 	_ = b.releaseLock(ctx, req.ID)
+	_ = b.clearRequestRouting(ctx, req.ID)
 	return nil
 }
 
@@ -262,7 +268,7 @@ func (b *Backend) AcquireFallbackAssignment(requestID string) (string, core.Assi
 	}
 	var frags int
 	_ = tx.QueryRow(ctx, `SELECT count(*) FROM fragments WHERE request_id = $1`, req.ID).Scan(&frags)
-	if req.Status != core.StatusQueued || frags > 0 {
+	if !req.AllowAIAnswers || req.Status != core.StatusQueued || frags > 0 {
 		return "", core.AssignedRequest{}, false
 	}
 	sessionID := "fallback_" + requestID
@@ -276,7 +282,7 @@ func (b *Backend) AcquireFallbackAssignment(requestID string) (string, core.Assi
 		return "", core.AssignedRequest{}, false
 	}
 	_ = b.removeQueued(ctx, req.ID)
-	return sessionID, core.AssignedRequest{RequestID: req.ID, Messages: req.Messages, CreatedAt: req.CreatedAt}, true
+	return sessionID, core.AssignedRequest{RequestID: req.ID, RequesterKind: req.RequesterKind, Messages: req.Messages, CreatedAt: req.CreatedAt}, true
 }
 
 // --- timeouts ---
@@ -354,6 +360,7 @@ func (b *Backend) SweepTimeouts(now time.Time, assignedTimeout, streamingTimeout
 				}
 				_ = b.publishStream(ctx, r.ID, streamMessage{Kind: "done", Finish: string(core.FinishPartial)})
 				_ = b.releaseLock(ctx, r.ID)
+				_ = b.clearRequestRouting(ctx, r.ID)
 				changed = append(changed, r.ID+":streaming_timeout_completed")
 			}
 		}
@@ -392,6 +399,9 @@ func (b *Backend) RegisterResponder(token string) (string, <-chan core.AssignedR
 	if err := b.heartbeat(ctx, sess.ID); err != nil {
 		return "", nil, err
 	}
+	if err := b.rdb.HSet(ctx, b.responderKindKey(), sess.ID, core.KindOrHuman(sess.Kind)).Err(); err != nil {
+		return "", nil, err
+	}
 
 	cleanup, ch := b.assignmentChannel(ctx, sess.ID)
 	hbCtx, cancelHB := context.WithCancel(context.Background())
@@ -412,7 +422,7 @@ func (b *Backend) RegisterResponder(token string) (string, <-chan core.AssignedR
 	// deliver it so a missed pub/sub assignment is recovered.
 	if reqID, _ := b.activeRequestForResponder(ctx, sess.ID); reqID != "" {
 		if req, _, err := b.RequestSnapshot(reqID); err == nil && req.Status == core.StatusAssigned {
-			_ = b.publishAssignment(ctx, sess.ID, core.AssignedRequest{RequestID: req.ID, Messages: req.Messages, CreatedAt: req.CreatedAt})
+			_ = b.publishAssignment(ctx, sess.ID, core.AssignedRequest{RequestID: req.ID, RequesterKind: req.RequesterKind, Messages: req.Messages, CreatedAt: req.CreatedAt})
 		}
 	}
 	return sess.ID, ch, nil
@@ -444,6 +454,8 @@ func (b *Backend) UnregisterResponder(sessionID string) {
 	now := b.clock()
 	_ = b.dropPresence(ctx, sessionID)
 	_ = b.removeAvailable(ctx, sessionID)
+	_ = b.rdb.HDel(ctx, b.responderAIKey(), sessionID).Err()
+	_ = b.rdb.HDel(ctx, b.responderKindKey(), sessionID).Err()
 
 	reqID, err := b.activeRequestForResponder(ctx, sessionID)
 	if err != nil || reqID == "" {
@@ -485,11 +497,12 @@ func (b *Backend) UnregisterResponder(sessionID string) {
 		_ = b.enqueueRequest(ctx, reqID)
 	} else {
 		_ = b.publishStream(ctx, reqID, streamMessage{Kind: "done", Finish: string(doneReason)})
+		_ = b.clearRequestRouting(ctx, reqID)
 	}
 	b.drainAssignments(ctx)
 }
 
-func (b *Backend) MarkResponderAvailable(sessionID string) error {
+func (b *Backend) MarkResponderAvailable(sessionID string, acceptAIQuestions ...bool) error {
 	b.mu.Lock()
 	_, ok := b.responders[sessionID]
 	b.mu.Unlock()
@@ -499,6 +512,14 @@ func (b *Backend) MarkResponderAvailable(sessionID string) error {
 	ctx := context.Background()
 	if reqID, _ := b.activeRequestForResponder(ctx, sessionID); reqID != "" {
 		return nil // busy: already owns a request
+	}
+	acceptAI := len(acceptAIQuestions) == 0 || acceptAIQuestions[0]
+	acceptValue := "0"
+	if acceptAI {
+		acceptValue = "1"
+	}
+	if err := b.rdb.HSet(ctx, b.responderAIKey(), sessionID, acceptValue).Err(); err != nil {
+		return err
 	}
 	_ = b.heartbeat(ctx, sessionID)
 	if err := b.addAvailable(ctx, sessionID); err != nil {
@@ -644,6 +665,7 @@ func (b *Backend) CancelBeforeFirstFragment(requestID string) bool {
 	}
 	_ = b.removeQueued(ctx, req.ID)
 	_ = b.releaseLock(ctx, req.ID)
+	_ = b.clearRequestRouting(ctx, req.ID)
 	_ = b.publishStream(ctx, req.ID, streamMessage{Kind: "done", Finish: string(core.FinishStop)})
 	return true
 }
@@ -779,13 +801,14 @@ func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
 		return
 	}
 	var msgs []byte
+	var requesterKind string
 	var createdAt time.Time
-	if err := b.pool.QueryRow(ctx, `SELECT messages, created_at FROM requests WHERE id = $1`, reqID).Scan(&msgs, &createdAt); err != nil {
+	if err := b.pool.QueryRow(ctx, `SELECT messages, requester_kind, created_at FROM requests WHERE id = $1`, reqID).Scan(&msgs, &requesterKind, &createdAt); err != nil {
 		return
 	}
 	var messages []core.Message
 	_ = json.Unmarshal(msgs, &messages)
-	_ = b.publishAssignment(ctx, sid, core.AssignedRequest{RequestID: reqID, Messages: messages, CreatedAt: createdAt})
+	_ = b.publishAssignment(ctx, sid, core.AssignedRequest{RequestID: reqID, RequesterKind: requesterKind, Messages: messages, CreatedAt: createdAt})
 }
 
 // --- shared tx helpers ---

@@ -86,7 +86,7 @@ func parseFallbackMaxChunkRunes(value string) int {
 }
 
 func (s *Server) scheduleFallback(req *core.Request) {
-	if !s.fallback.Enabled {
+	if !s.fallback.Enabled || !req.AllowAIAnswers {
 		return
 	}
 	requestID := req.ID

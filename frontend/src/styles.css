@@ -372,6 +372,75 @@ button:active:not(:disabled),
   transition: transform var(--motion-medium);
 }
 
+.preference-toggle {
+  position: relative;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.preference-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.preference-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-track {
+  width: 34px;
+  height: 20px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background var(--motion-fast);
+}
+
+.toggle-track span {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--panel-strong);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  transition: transform var(--motion-fast);
+}
+
+.preference-toggle input:checked + .toggle-track {
+  background: var(--success);
+}
+
+.preference-toggle input:checked + .toggle-track span {
+  transform: translateX(14px);
+}
+
+.preference-toggle input:focus-visible + .toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -903,6 +972,30 @@ textarea:focus {
   color: var(--success);
 }
 
+.ai-source-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 5px 14px var(--accent-shadow);
+  animation: badge-in 260ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+.ai-source-badge.question {
+  background: var(--solid);
+  color: var(--solid-text);
+  box-shadow: var(--shadow);
+}
+
 .thinking-line {
   display: inline-flex;
   align-items: center;
@@ -996,6 +1089,12 @@ textarea:focus {
   gap: 10px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.participation-row {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
 }
 
 .composer-footer > span {
@@ -1219,6 +1318,12 @@ textarea:focus {
 
 .pane-head h3 {
   font-size: 15px;
+}
+
+.pane-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .ticket-meta {
@@ -1514,6 +1619,17 @@ html[data-theme="dark"] .status-orbit.busy {
   from {
     opacity: 0;
     transform: translateY(-8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes badge-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.92);
   }
   to {
     opacity: 1;

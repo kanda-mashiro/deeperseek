@@ -18,6 +18,31 @@ func (b *Backend) queueKey() string            { return b.key("queue") }
 func (b *Backend) availKey() string            { return b.key("avail") }
 func (b *Backend) presenceKey() string         { return b.key("presence") }
 func (b *Backend) lockKey(reqID string) string { return b.key("lock", reqID) }
+func (b *Backend) responderAIKey() string      { return b.key("responder", "accept-ai") }
+func (b *Backend) responderKindKey() string    { return b.key("responder", "kind") }
+func (b *Backend) requestKindKey(reqID string) string {
+	return b.key("request", reqID, "kind")
+}
+func (b *Backend) requestAIAnswerKey(reqID string) string {
+	return b.key("request", reqID, "allow-ai-answer")
+}
+
+func (b *Backend) setRequestRouting(ctx context.Context, reqID, requesterKind string, allowAIAnswers bool) error {
+	allow := "0"
+	if allowAIAnswers {
+		allow = "1"
+	}
+	_, err := b.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Set(ctx, b.requestKindKey(reqID), requesterKind, 0)
+		pipe.Set(ctx, b.requestAIAnswerKey(reqID), allow, 0)
+		return nil
+	})
+	return err
+}
+
+func (b *Backend) clearRequestRouting(ctx context.Context, reqID string) error {
+	return b.rdb.Del(ctx, b.requestKindKey(reqID), b.requestAIAnswerKey(reqID)).Err()
+}
 
 // --- waiting queue (oldest at head) ---
 
@@ -65,23 +90,51 @@ func (b *Backend) removeAvailable(ctx context.Context, sid string) error {
 // atomic LPOP guarantees a request is handed to exactly one responder across all
 // instances (SPEC 4.3).
 //
-// KEYS: [1]=avail [2]=queue [3]=presence [4]=lock-prefix
-// ARGV: [1]=min-fresh-score [2]=lock-ttl-seconds
+// KEYS: [1]=avail [2]=queue [3]=presence [4]=responder-ai-pref [5]=responder-kind
+// ARGV: [1]=min-fresh-score [2]=lock-ttl-seconds [3]=lock-prefix
+//
+//	[4]=request-prefix [5]=kind-suffix [6]=allow-ai-answer-suffix
 var assignScript = redis.NewScript(`
 local minfresh = tonumber(ARGV[1])
 local lockttl = tonumber(ARGV[2])
+local skipped = {}
+local function restoreSkipped()
+  for i = #skipped, 1, -1 do
+    redis.call('LPUSH', KEYS[1], skipped[i])
+  end
+end
 while true do
   local sid = redis.call('LPOP', KEYS[1])
-  if not sid then return nil end
+  if not sid then
+    restoreSkipped()
+    return nil
+  end
   local score = redis.call('ZSCORE', KEYS[3], sid)
   if score and tonumber(score) >= minfresh then
-    local reqid = redis.call('LPOP', KEYS[2])
-    if not reqid then
-      redis.call('LPUSH', KEYS[1], sid)
-      return nil
+    local acceptai = redis.call('HGET', KEYS[4], sid) or '1'
+    local responderkind = redis.call('HGET', KEYS[5], sid) or 'human'
+    local queued = redis.call('LRANGE', KEYS[2], 0, -1)
+    for _, reqid in ipairs(queued) do
+      local requestkind = redis.call('GET', ARGV[4] .. reqid .. ARGV[5]) or 'human'
+      local allowaianswer = redis.call('GET', ARGV[4] .. reqid .. ARGV[6]) or '1'
+      local compatible = true
+      if responderkind == 'ai_persona' and allowaianswer ~= '1' then
+        compatible = false
+      end
+      if requestkind == 'ai_persona' and (acceptai ~= '1' or responderkind == 'ai_persona') then
+        compatible = false
+      end
+      if compatible then
+        redis.call('LREM', KEYS[2], 1, reqid)
+        restoreSkipped()
+        redis.call('SET', ARGV[3] .. reqid, sid, 'EX', lockttl)
+        return {reqid, sid}
+      end
     end
-    redis.call('SET', KEYS[4] .. reqid, sid, 'EX', lockttl)
-    return {reqid, sid}
+    table.insert(skipped, sid)
+  else
+    redis.call('HDEL', KEYS[4], sid)
+    redis.call('HDEL', KEYS[5], sid)
   end
 end
 `)
@@ -91,8 +144,8 @@ end
 func (b *Backend) assignNext(ctx context.Context) (string, string, bool, error) {
 	minFresh := b.clock().Add(-presenceTTL).UnixMilli()
 	res, err := assignScript.Run(ctx, b.rdb,
-		[]string{b.availKey(), b.queueKey(), b.presenceKey(), b.key("lock") + ":"},
-		minFresh, int(assignLockTTL.Seconds())).Result()
+		[]string{b.availKey(), b.queueKey(), b.presenceKey(), b.responderAIKey(), b.responderKindKey()},
+		minFresh, int(assignLockTTL.Seconds()), b.key("lock")+":", b.key("request")+":", ":kind", ":allow-ai-answer").Result()
 	if err == redis.Nil || res == nil {
 		return "", "", false, nil
 	}

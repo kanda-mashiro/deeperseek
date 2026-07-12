@@ -89,6 +89,70 @@ func TestCrossInstanceRequestAnswerFlow(t *testing.T) {
 	}
 }
 
+func TestDistributedMatchingHonorsAIParticipationPreferences(t *testing.T) {
+	a := backendForTest(t)
+	bInst := secondBackend(t)
+	ctx := context.Background()
+
+	personaRequester := a.PersonaSession("persona requester")
+	humanRequester := a.GuestSession("human requester")
+	aiReq, err := a.CreateRequest(ctx, personaRequester.Token, "m", []core.Message{{Role: "user", Content: "AI question"}}, 0)
+	if err != nil {
+		t.Fatalf("create persona request: %v", err)
+	}
+	humanReq, err := a.CreateRequest(ctx, humanRequester.Token, "m", []core.Message{{Role: "user", Content: "human question"}}, 0)
+	if err != nil {
+		t.Fatalf("create human request: %v", err)
+	}
+
+	humanOnly := bInst.GuestSession("human-only responder")
+	humanOnlyID, humanOnlyAssignments, _ := bInst.RegisterResponder(humanOnly.Token)
+	if err := bInst.MarkResponderAvailable(humanOnlyID, false); err != nil {
+		t.Fatalf("mark human-only available: %v", err)
+	}
+	if assignment := waitAssignment(t, humanOnlyAssignments, 5*time.Second); assignment.RequestID != humanReq.ID || assignment.RequesterKind != core.KindHuman {
+		t.Fatalf("expected compatible human request, got %+v", assignment)
+	}
+
+	aiCapable := bInst.GuestSession("AI-capable responder")
+	aiCapableID, aiCapableAssignments, _ := bInst.RegisterResponder(aiCapable.Token)
+	if err := bInst.MarkResponderAvailable(aiCapableID); err != nil {
+		t.Fatalf("mark AI-capable available: %v", err)
+	}
+	if assignment := waitAssignment(t, aiCapableAssignments, 5*time.Second); assignment.RequestID != aiReq.ID || assignment.RequesterKind != core.KindAIPersona {
+		t.Fatalf("expected preserved persona request, got %+v", assignment)
+	}
+}
+
+func TestDistributedRequestCanRejectAIAnswers(t *testing.T) {
+	a := backendForTest(t)
+	ctx := context.Background()
+	requester := a.GuestSession("requester")
+	persona := a.PersonaSession("persona responder")
+	personaID, personaAssignments, _ := a.RegisterResponder(persona.Token)
+	_ = a.MarkResponderAvailable(personaID)
+
+	req, err := a.CreateRequest(ctx, requester.Token, "m", []core.Message{{Role: "user", Content: "human only"}}, 0, false)
+	if err != nil {
+		t.Fatalf("create human-only request: %v", err)
+	}
+	select {
+	case assignment := <-personaAssignments:
+		t.Fatalf("persona must not receive human-only request: %+v", assignment)
+	case <-time.After(400 * time.Millisecond):
+	}
+	if _, _, ok := a.AcquireFallbackAssignment(req.ID); ok {
+		t.Fatal("fallback must not acquire human-only request")
+	}
+
+	human := a.GuestSession("human responder")
+	humanID, humanAssignments, _ := a.RegisterResponder(human.Token)
+	_ = a.MarkResponderAvailable(humanID)
+	if assignment := waitAssignment(t, humanAssignments, 5*time.Second); assignment.RequestID != req.ID {
+		t.Fatalf("human responder got wrong request: %+v", assignment)
+	}
+}
+
 func TestFreezeChargeAndInsufficientPoints(t *testing.T) {
 	a := backendForTest(t)
 	bInst := secondBackend(t)

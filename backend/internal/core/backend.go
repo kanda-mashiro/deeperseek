@@ -22,14 +22,14 @@ type Backend interface {
 	PersonaSession(nickname string) AuthResult
 	Me(token string) (AuthResult, error)
 
-	CreateRequest(ctx context.Context, token, model string, messages []Message, maxOutputChars int) (*Request, error)
+	CreateRequest(ctx context.Context, token, model string, messages []Message, maxOutputChars int, allowAIAnswers ...bool) (*Request, error)
 	Subscribe(requestID string) (<-chan StreamEvent, func(), error)
 	RequestSnapshot(requestID string) (*Request, string, error)
 	CancelBeforeFirstFragment(requestID string) bool
 
 	RegisterResponder(token string) (string, <-chan AssignedRequest, error)
 	UnregisterResponder(sessionID string)
-	MarkResponderAvailable(sessionID string) error
+	MarkResponderAvailable(sessionID string, acceptAIQuestions ...bool) error
 	SubmitFragment(sessionID string, clientSeq int64, text string) (Fragment, bool, error)
 	Finish(sessionID string) error
 	Skip(sessionID string) error
