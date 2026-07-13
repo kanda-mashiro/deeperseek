@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-test("fragment ack during IME composition is deferred and never destroys the composition", async ({ browser }) => {
+test("a stability timer cannot submit or mutate the editor during IME composition", async ({ browser }) => {
   const run = uniqueRun("imeAck");
   const requester = await newUserPage(browser);
   const responder = await newUserPage(browser);
@@ -14,20 +14,49 @@ test("fragment ack during IME composition is deferred and never destroys the com
 
     await responder.getByTestId("answer-draft").fill("你好");
     await startAppendComposition(responder, "shi");
-    // the 1s stability timer fires and the ack lands while the composition is active
+    // Reproduces the production recording: the timer for the stable prefix
+    // expires while the next pinyin candidate window is still open.
     await responder.waitForTimeout(1_600);
-    await expect(requester.getByTestId("request-answer")).toHaveText("你好");
+    await expect(requester.getByTestId("request-answer")).toHaveCount(0);
     await expect(responder.getByTestId("answer-committed")).toHaveText("");
     await expect(responder.getByTestId("answer-draft")).toContainText("你好shi");
 
     await endCompositionWith(responder, "shi", "时间");
-    await expect(responder.getByTestId("answer-committed")).toHaveText(/^你好(时间)?$/);
+    await expect(requester.getByTestId("request-answer")).toHaveCount(0);
     await expect(responder.getByTestId("answer-committed")).toHaveText("你好时间", { timeout: 5_000 });
     await expect(responder.getByTestId("answer-draft")).toHaveAttribute("data-empty", "true");
     await expect(requester.getByTestId("request-answer")).toHaveText("你好时间");
 
     await responder.getByTestId("answer-finish").click();
     await expect(requester.getByTestId("thinking-mark")).toHaveCount(0);
+  } finally {
+    await responder.context().close().catch(() => undefined);
+    await requester.context().close().catch(() => undefined);
+  }
+});
+
+test("cancelling IME composition restarts the full stability interval", async ({ browser }) => {
+  const run = uniqueRun("imeCancel");
+  const requester = await newUserPage(browser);
+  const responder = await newUserPage(browser);
+
+  try {
+    await responder.getByTestId("mode-answer").click();
+    await responder.getByTestId("answer-online").click();
+    await requester.getByTestId("request-prompt").fill(`IME cancel question ${run}`);
+    await requester.getByTestId("request-send").click();
+    await expect(responder.getByTestId("answer-incoming")).toContainText(`IME cancel question ${run}`);
+
+    await responder.getByTestId("answer-draft").fill("保持");
+    await startAppendComposition(responder, "shi");
+    await responder.waitForTimeout(1_200);
+    await expect(requester.getByTestId("request-answer")).toHaveCount(0);
+
+    await endCompositionWith(responder, "shi", "");
+    await responder.waitForTimeout(700);
+    await expect(requester.getByTestId("request-answer")).toHaveCount(0);
+    await expect(responder.getByTestId("answer-committed")).toHaveText("保持", { timeout: 5_000 });
+    await expect(requester.getByTestId("request-answer")).toHaveText("保持");
   } finally {
     await responder.context().close().catch(() => undefined);
     await requester.context().close().catch(() => undefined);

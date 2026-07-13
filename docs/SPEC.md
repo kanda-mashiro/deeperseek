@@ -1,6 +1,6 @@
 # DeeperSeek Product Specification
 
-Status: Frozen v0.8
+Status: Frozen v0.9
 
 This document is the source of truth for product behavior after it is frozen.
 Implementation and tests must be derived from this document, not the other way
@@ -282,6 +282,14 @@ input methods. Composition text must remain editable while the input method is
 active. Intermediate romanized or partial composition text must not start the
 1000 ms fragment commit timer and must not be streamed as committed text before
 the composition ends.
+
+From `compositionstart` through `compositionend`, the editor is an atomic input
+boundary. A stability timer that was armed before the composition started must
+not submit a fragment while that boundary is active. Fragment acknowledgements,
+parent rerenders, caret-anchor normalization, focus restoration, and selection
+restoration must not mutate the editable DOM or the browser selection during the
+boundary. After `compositionend`, the frontend starts a fresh 1000 ms stability
+timer from the complete post-composition draft.
 
 The editable suffix must retain a real caret anchor even when its visible text
 is empty. This applies both when a fragment acknowledgement moves the entire

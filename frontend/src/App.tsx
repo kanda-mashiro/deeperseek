@@ -891,6 +891,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
   const [pendingCommit, setPendingCommit] = useState("");
   const [rejectedCommit, setRejectedCommit] = useState("");
   const [clientSeq, setClientSeq] = useState(1);
+  const [compositionEpoch, setCompositionEpoch] = useState(0);
   const [error, setError] = useState("");
   const [activity, setActivity] = useState("离线摸鱼");
   const [acceptAIQuestions, setAcceptAIQuestions] = useState(() => storedBoolean(acceptAIQuestionsStorageKey, true));
@@ -1073,11 +1074,12 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     }
     const text = draft;
     const timer = window.setTimeout(() => {
+      if (editorRef.current?.isComposing()) return;
       trackPendingCommit(text);
       ws.send(JSON.stringify({ type: "fragment", client_seq: clientSeqRef.current, text }));
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [assignment, draft, pendingCommit, clientSeq, rejectedCommit]);
+  }, [assignment, draft, pendingCommit, clientSeq, rejectedCommit, compositionEpoch]);
 
   const queueWait = useMemo(() => {
     if (!assignment) return 0;
@@ -1213,6 +1215,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
                 pendingLength={pendingCommit.length}
                 onDraftChange={setDraft}
                 onCommitted={applyAckedCommit}
+                onCompositionSettled={() => setCompositionEpoch((value) => value + 1)}
               />
             </div>
           )}
@@ -1400,6 +1403,7 @@ function BoardWatch({ ticket, onClose }: { ticket: BoardTicket; onClose: () => v
 
 type AnswerEditorHandle = {
   applyCommit(text: string): void;
+  isComposing(): boolean;
   reset(): void;
 };
 
@@ -1412,8 +1416,12 @@ const InlineAnswerEditor = forwardRef<
     pendingLength: number;
     onDraftChange: (next: string) => void;
     onCommitted: (text: string, remaining: string) => void;
+    onCompositionSettled: () => void;
   }
->(function InlineAnswerEditor({ committedFrags, disabled, maxLength, pendingLength, onDraftChange, onCommitted }, ref) {
+>(function InlineAnswerEditor(
+  { committedFrags, disabled, maxLength, pendingLength, onDraftChange, onCommitted, onCompositionSettled },
+  ref
+) {
   const draftRef = useRef<HTMLSpanElement | null>(null);
   const composingRef = useRef(false);
   const queuedCommitsRef = useRef<string[]>([]);
@@ -1524,6 +1532,9 @@ const InlineAnswerEditor = forwardRef<
       }
       applyCommitNow(text);
     },
+    isComposing() {
+      return composingRef.current;
+    },
     reset() {
       queuedCommitsRef.current = [];
       composingRef.current = false;
@@ -1559,6 +1570,7 @@ const InlineAnswerEditor = forwardRef<
       }
       flushQueuedCommits();
       syncDraftFromDOM();
+      onCompositionSettled();
     });
   };
 
@@ -1635,6 +1647,7 @@ const InlineAnswerEditor = forwardRef<
   };
 
   useLayoutEffect(() => {
+    if (composingRef.current) return;
     const span = draftRef.current;
     if (!span) return;
     ensureDraftAnchor(span);
