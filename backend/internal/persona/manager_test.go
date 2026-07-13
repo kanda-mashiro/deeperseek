@@ -246,3 +246,15 @@ func waitPersonaAssignment(t *testing.T, assignments <-chan core.AssignedRequest
 		return core.AssignedRequest{}
 	}
 }
+
+func TestTrimQuestionAlwaysReturnsAQuestion(t *testing.T) {
+	for input, want := range map[string]string{
+		"会做梦吗？": "会做梦吗？",
+		"为什么":   "为什么？",
+		"说说看。":  "说说看？",
+	} {
+		if got := trimQuestion(input); got != want {
+			t.Fatalf("trimQuestion(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

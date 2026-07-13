@@ -222,6 +222,10 @@ h1 {
   flex-wrap: wrap;
 }
 
+.button-row button {
+  white-space: nowrap;
+}
+
 .seg,
 .ghost,
 .primary,

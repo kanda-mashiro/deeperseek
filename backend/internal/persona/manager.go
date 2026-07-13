@@ -401,6 +401,9 @@ func followUpQuestionMessages(history []core.Message) []core.Message {
 
 func trimQuestion(question string) string {
 	question = strings.TrimSpace(question)
+	if question != "" && !strings.HasSuffix(question, "？") && !strings.HasSuffix(question, "?") {
+		question = strings.TrimRight(question, "。.!！") + "？"
+	}
 	if runes := []rune(question); len(runes) > 500 {
 		return string(runes[:500])
 	}
