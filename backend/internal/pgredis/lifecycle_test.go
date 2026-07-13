@@ -153,6 +153,51 @@ func TestDistributedRequestCanRejectAIAnswers(t *testing.T) {
 	}
 }
 
+func TestDistributedTargetedPersonaFollowUpOnlyReachesPreferredResponder(t *testing.T) {
+	a := backendForTest(t)
+	bInst := secondBackend(t)
+	ctx := context.Background()
+
+	other := bInst.GuestSession("other responder")
+	otherID, otherAssignments, _ := bInst.RegisterResponder(other.Token)
+	if err := bInst.MarkResponderAvailable(otherID); err != nil {
+		t.Fatalf("mark other available: %v", err)
+	}
+
+	preferred := bInst.GuestSession("preferred responder")
+	preferredID, preferredAssignments, _ := bInst.RegisterResponder(preferred.Token)
+	if err := bInst.MarkResponderAvailable(preferredID); err != nil {
+		t.Fatalf("mark preferred available: %v", err)
+	}
+
+	persona := a.PersonaSession("persona requester")
+	messages := []core.Message{
+		{Role: "user", Content: "第一问"},
+		{Role: "assistant", Content: "第一答"},
+		{Role: "user", Content: "第二问"},
+	}
+	req, err := a.CreateTargetedRequest(ctx, persona.Token, "m", messages, 0, preferredID)
+	if err != nil {
+		t.Fatalf("create targeted follow-up: %v", err)
+	}
+	assignment := waitAssignment(t, preferredAssignments, 5*time.Second)
+	if assignment.RequestID != req.ID || len(assignment.Messages) != 3 {
+		t.Fatalf("unexpected targeted assignment: %+v", assignment)
+	}
+	select {
+	case leaked := <-otherAssignments:
+		t.Fatalf("targeted follow-up leaked to another responder: %+v", leaked)
+	case <-time.After(400 * time.Millisecond):
+	}
+	if err := bInst.Skip(preferredID); err != nil {
+		t.Fatalf("skip targeted follow-up: %v", err)
+	}
+	snap, _, err := a.RequestSnapshot(req.ID)
+	if err != nil || snap.Status != core.StatusAbandoned {
+		t.Fatalf("targeted skip should abandon request: status=%v err=%v", snap.Status, err)
+	}
+}
+
 func TestFreezeChargeAndInsufficientPoints(t *testing.T) {
 	a := backendForTest(t)
 	bInst := secondBackend(t)

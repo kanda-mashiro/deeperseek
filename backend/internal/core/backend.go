@@ -23,6 +23,7 @@ type Backend interface {
 	Me(token string) (AuthResult, error)
 
 	CreateRequest(ctx context.Context, token, model string, messages []Message, maxOutputChars int, allowAIAnswers ...bool) (*Request, error)
+	CreateTargetedRequest(ctx context.Context, token, model string, messages []Message, maxOutputChars int, preferredResponderSessionID string) (*Request, error)
 	Subscribe(requestID string) (<-chan StreamEvent, func(), error)
 	RequestSnapshot(requestID string) (*Request, string, error)
 	CancelBeforeFirstFragment(requestID string) bool
@@ -30,6 +31,7 @@ type Backend interface {
 	RegisterResponder(token string) (string, <-chan AssignedRequest, error)
 	UnregisterResponder(sessionID string)
 	MarkResponderAvailable(sessionID string, acceptAIQuestions ...bool) error
+	ResumeResponder(sessionID string) error
 	SubmitFragment(sessionID string, clientSeq int64, text string) (Fragment, bool, error)
 	Finish(sessionID string) error
 	Skip(sessionID string) error

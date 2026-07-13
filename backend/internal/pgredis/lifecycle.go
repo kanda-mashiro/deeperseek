@@ -12,6 +12,7 @@ import (
 	"deeperseek/backend/internal/core"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/redis/go-redis/v9"
 )
 
 const assignTickInterval = 200 * time.Millisecond
@@ -23,6 +24,18 @@ type responderConn struct {
 // --- request creation ---
 
 func (b *Backend) CreateRequest(ctx context.Context, token, model string, messages []core.Message, maxOutputChars int, allowAIAnswers ...bool) (*core.Request, error) {
+	allowAI := len(allowAIAnswers) == 0 || allowAIAnswers[0]
+	return b.createRequest(ctx, token, model, messages, maxOutputChars, allowAI, "")
+}
+
+func (b *Backend) CreateTargetedRequest(ctx context.Context, token, model string, messages []core.Message, maxOutputChars int, preferredResponderSessionID string) (*core.Request, error) {
+	if preferredResponderSessionID == "" {
+		return nil, core.ErrResponderUnavailable
+	}
+	return b.createRequest(ctx, token, model, messages, maxOutputChars, false, preferredResponderSessionID)
+}
+
+func (b *Backend) createRequest(ctx context.Context, token, model string, messages []core.Message, maxOutputChars int, allowAI bool, preferredResponderSessionID string) (*core.Request, error) {
 	total := 0
 	for _, m := range messages {
 		total += utf8.RuneCountInString(m.Content)
@@ -37,6 +50,9 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 	sess, err := b.sessionByToken(ctx, token)
 	if err != nil {
 		return nil, err
+	}
+	if preferredResponderSessionID != "" && core.KindOrHuman(sess.Kind) != core.KindAIPersona {
+		return nil, core.ErrUnauthorized
 	}
 
 	now := b.clock()
@@ -65,18 +81,18 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 	reqID := newID("req")
 	category := core.QuestionCategory(messages)
 	boardEligible := sess.Guest && sess.Kind != core.KindAIPersona // real guests only; personas never on the board
-	allowAI := len(allowAIAnswers) == 0 || allowAIAnswers[0]
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO requests (id, requester_id, requester_session_id, requester_guest, requester_kind, messages, model,
-			status, frozen_points, output_limit, reaction, board_eligible, question_category, allow_ai_answers, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, $9, 'none', $10, $11, $12, $13, $13)`,
-		reqID, sess.UserID, sess.ID, sess.Guest, core.KindOrHuman(sess.Kind), msgs, model, frozen, maxOutputChars, boardEligible, category, allowAI, now); err != nil {
+			status, frozen_points, output_limit, reaction, board_eligible, question_category, allow_ai_answers,
+			preferred_responder_session_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, $9, 'none', $10, $11, $12, $13, $14, $14)`,
+		reqID, sess.UserID, sess.ID, sess.Guest, core.KindOrHuman(sess.Kind), msgs, model, frozen, maxOutputChars, boardEligible, category, allowAI, preferredResponderSessionID, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	if err := b.setRequestRouting(context.Background(), reqID, core.KindOrHuman(sess.Kind), allowAI); err != nil {
+	if err := b.setRequestRouting(context.Background(), reqID, core.KindOrHuman(sess.Kind), allowAI, preferredResponderSessionID); err != nil {
 		return nil, err
 	}
 
@@ -91,7 +107,8 @@ func (b *Backend) CreateRequest(ctx context.Context, token, model string, messag
 
 	return &core.Request{
 		ID: reqID, RequesterID: sess.UserID, RequesterSessionID: sess.ID, RequesterGuest: sess.Guest,
-		RequesterKind: core.KindOrHuman(sess.Kind), AllowAIAnswers: allowAI, BoardEligible: boardEligible, Messages: messages, Model: model,
+		RequesterKind: core.KindOrHuman(sess.Kind), AllowAIAnswers: allowAI, PreferredResponderSessionID: preferredResponderSessionID,
+		BoardEligible: boardEligible, Messages: messages, Model: model,
 		Status: core.StatusQueued, FrozenPoints: frozen, OutputLimit: maxOutputChars, Reaction: core.ReactionNone,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
@@ -239,13 +256,23 @@ func (b *Backend) Skip(sessionID string) error {
 	if frags > 0 {
 		return core.ErrCannotSkipCommitted
 	}
-	if err := requeueRequestTx(ctx, tx, req.ID, now); err != nil {
+	personaConversation := req.RequesterKind == core.KindAIPersona
+	if personaConversation {
+		if err := abandonRequestTx(ctx, tx, req.ID, now); err != nil {
+			return err
+		}
+	} else if err := requeueRequestTx(ctx, tx, req.ID, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	_ = b.releaseLock(ctx, req.ID)
+	if personaConversation {
+		_ = b.clearRequestRouting(ctx, req.ID)
+		_ = b.publishStream(ctx, req.ID, streamMessage{Kind: "done", Finish: string(core.FinishStop)})
+		return nil
+	}
 	_ = b.enqueueRequest(ctx, req.ID)
 	b.drainAssignments(ctx)
 	return nil
@@ -268,7 +295,7 @@ func (b *Backend) AcquireFallbackAssignment(requestID string) (string, core.Assi
 	}
 	var frags int
 	_ = tx.QueryRow(ctx, `SELECT count(*) FROM fragments WHERE request_id = $1`, req.ID).Scan(&frags)
-	if !req.AllowAIAnswers || req.Status != core.StatusQueued || frags > 0 {
+	if req.PreferredResponderSessionID != "" || !req.AllowAIAnswers || req.Status != core.StatusQueued || frags > 0 {
 		return "", core.AssignedRequest{}, false
 	}
 	sessionID := "fallback_" + requestID
@@ -294,28 +321,42 @@ func (b *Backend) SweepTimeouts(now time.Time, assignedTimeout, streamingTimeout
 	if assignedTimeout > 0 {
 		cutoff := now.Add(-assignedTimeout)
 		rows, err := b.pool.Query(ctx,
-			`SELECT id FROM requests WHERE status = 'assigned' AND updated_at <= $1
+			`SELECT id, preferred_responder_session_id FROM requests WHERE status = 'assigned' AND updated_at <= $1
 			 AND (SELECT count(*) FROM fragments f WHERE f.request_id = requests.id) = 0`, cutoff)
 		if err == nil {
-			var ids []string
+			type timedOutRequest struct {
+				id        string
+				preferred string
+			}
+			var requests []timedOutRequest
 			for rows.Next() {
-				var id string
-				if rows.Scan(&id) == nil {
-					ids = append(ids, id)
+				var request timedOutRequest
+				if rows.Scan(&request.id, &request.preferred) == nil {
+					requests = append(requests, request)
 				}
 			}
 			rows.Close()
-			for _, id := range ids {
+			for _, request := range requests {
 				// re-assert the freshness predicate in the CAS so a request that was
 				// legitimately re-assigned between SELECT and UPDATE is not revoked
+				nextStatus := "queued"
+				if request.preferred != "" {
+					nextStatus = "abandoned"
+				}
 				tag, err := b.pool.Exec(ctx,
-					`UPDATE requests SET status = 'queued', responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
+					`UPDATE requests SET status = $4, responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
 						responder_kind = '', responder_display = '', updated_at = $2
-					 WHERE id = $1 AND status = 'assigned' AND updated_at <= $3`, id, now, cutoff)
+					 WHERE id = $1 AND status = 'assigned' AND updated_at <= $3`, request.id, now, cutoff, nextStatus)
 				if err == nil && tag.RowsAffected() > 0 {
-					_ = b.releaseLock(ctx, id)
-					_ = b.enqueueRequest(ctx, id)
-					changed = append(changed, id+":assigned_timeout_requeued")
+					_ = b.releaseLock(ctx, request.id)
+					if request.preferred != "" {
+						_ = b.clearRequestRouting(ctx, request.id)
+						_ = b.publishStream(ctx, request.id, streamMessage{Kind: "done", Finish: string(core.FinishStop)})
+						changed = append(changed, request.id+":targeted_timeout_abandoned")
+					} else {
+						_ = b.enqueueRequest(ctx, request.id)
+						changed = append(changed, request.id+":assigned_timeout_requeued")
+					}
 				}
 			}
 		}
@@ -479,8 +520,14 @@ func (b *Backend) UnregisterResponder(sessionID string) {
 	var frags int
 	_ = tx.QueryRow(ctx, `SELECT count(*) FROM fragments WHERE request_id = $1`, reqID).Scan(&frags)
 	var doneReason core.FinishReason
+	targetedAbandoned := false
 	if frags == 0 {
-		if err := requeueRequestTx(ctx, tx, reqID, now); err != nil {
+		if req.PreferredResponderSessionID != "" {
+			if err := abandonRequestTx(ctx, tx, reqID, now); err != nil {
+				return
+			}
+			targetedAbandoned = true
+		} else if err := requeueRequestTx(ctx, tx, reqID, now); err != nil {
 			return
 		}
 	} else {
@@ -493,7 +540,10 @@ func (b *Backend) UnregisterResponder(sessionID string) {
 		return
 	}
 	_ = b.releaseLock(ctx, reqID)
-	if frags == 0 {
+	if targetedAbandoned {
+		_ = b.clearRequestRouting(ctx, reqID)
+		_ = b.publishStream(ctx, reqID, streamMessage{Kind: "done", Finish: string(core.FinishStop)})
+	} else if frags == 0 {
 		_ = b.enqueueRequest(ctx, reqID)
 	} else {
 		_ = b.publishStream(ctx, reqID, streamMessage{Kind: "done", Finish: string(doneReason)})
@@ -510,9 +560,6 @@ func (b *Backend) MarkResponderAvailable(sessionID string, acceptAIQuestions ...
 		return core.ErrResponderUnavailable
 	}
 	ctx := context.Background()
-	if reqID, _ := b.activeRequestForResponder(ctx, sessionID); reqID != "" {
-		return nil // busy: already owns a request
-	}
 	acceptAI := len(acceptAIQuestions) == 0 || acceptAIQuestions[0]
 	acceptValue := "0"
 	if acceptAI {
@@ -521,7 +568,32 @@ func (b *Backend) MarkResponderAvailable(sessionID string, acceptAIQuestions ...
 	if err := b.rdb.HSet(ctx, b.responderAIKey(), sessionID, acceptValue).Err(); err != nil {
 		return err
 	}
+	if reqID, _ := b.activeRequestForResponder(ctx, sessionID); reqID != "" {
+		return nil // busy: preference is stored now and applies to the next assignment
+	}
 	_ = b.heartbeat(ctx, sessionID)
+	if err := b.addAvailable(ctx, sessionID); err != nil {
+		return err
+	}
+	b.drainAssignments(ctx)
+	return nil
+}
+
+func (b *Backend) ResumeResponder(sessionID string) error {
+	ctx := context.Background()
+	if reqID, _ := b.activeRequestForResponder(ctx, sessionID); reqID != "" {
+		return nil
+	}
+	score, err := b.rdb.ZScore(ctx, b.presenceKey(), sessionID).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return core.ErrResponderUnavailable
+		}
+		return err
+	}
+	if score < float64(b.clock().Add(-presenceTTL).UnixMilli()) {
+		return core.ErrResponderUnavailable
+	}
 	if err := b.addAvailable(ctx, sessionID); err != nil {
 		return err
 	}
@@ -786,7 +858,7 @@ func (b *Backend) handlePair(ctx context.Context, reqID, sid string) {
 	tag, err := b.pool.Exec(ctx,
 		`UPDATE requests SET status = 'assigned', responder_session_id = $1, responder_user_id = $2, responder_guest = $3,
 			responder_kind = $4, responder_display = $5, updated_at = $6
-		 WHERE id = $7 AND status = 'queued'`,
+		 WHERE id = $7 AND status = 'queued' AND (preferred_responder_session_id = '' OR preferred_responder_session_id = $1)`,
 		sid, userID, guest, core.KindOrHuman(kind), nickname, now, reqID)
 	if err != nil {
 		_ = b.releaseLock(bg, reqID)
@@ -854,6 +926,15 @@ func requeueRequestTx(ctx context.Context, tx pgx.Tx, reqID string, now time.Tim
 	_, err := tx.Exec(ctx,
 		`UPDATE requests SET status = 'queued', responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
 			responder_kind = '', responder_display = '', updated_at = $2
+		 WHERE id = $1 AND `+notTerminalSQL,
+		reqID, now)
+	return err
+}
+
+func abandonRequestTx(ctx context.Context, tx pgx.Tx, reqID string, now time.Time) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE requests SET status = 'abandoned', responder_session_id = '', responder_user_id = '', responder_guest = FALSE,
+			responder_kind = '', responder_display = '', frozen_points = 0, updated_at = $2
 		 WHERE id = $1 AND `+notTerminalSQL,
 		reqID, now)
 	return err

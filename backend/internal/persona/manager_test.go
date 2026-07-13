@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,26 @@ func fakeLLM(t *testing.T, answer string) llm.Config {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":" + jsonString(answer) + "}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+	return llm.Config{BaseURL: upstream.URL, APIKey: "k", Model: "m", MaxTokens: 100, Client: upstream.Client()}
+}
+
+func sequenceLLM(t *testing.T, responses ...string) llm.Config {
+	t.Helper()
+	var mu sync.Mutex
+	index := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		response := responses[len(responses)-1]
+		if index < len(responses) {
+			response = responses[index]
+			index++
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":" + jsonString(response) + "}}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	t.Cleanup(upstream.Close)
@@ -159,5 +180,69 @@ func TestManagerSpawnsNoPersonasWithoutHumans(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := svc.OnlineResponderCount(); n != 0 {
 		t.Fatalf("expected no personas without humans, got %d online responders", n)
+	}
+}
+
+func TestManagerContinuesPersonaQuestionWithSameResponderAndFullTranscript(t *testing.T) {
+	svc := core.NewService()
+	cfg := testConfig(sequenceLLM(t, "第一问？", "根据第一答的第二问？"))
+	cfg.TargetQueue = 1
+	cfg.MaxResponders = 0
+	cfg.FollowUpQueueTimeout = time.Second
+	m := NewManager(svc, cfg)
+
+	human := svc.GuestSession("human")
+	sid, assignments, err := svc.RegisterResponder(human.Token)
+	if err != nil {
+		t.Fatalf("register human: %v", err)
+	}
+	if err := svc.MarkResponderAvailable(sid, true); err != nil {
+		t.Fatalf("mark human available: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+
+	first := waitPersonaAssignment(t, assignments)
+	if first.RequesterKind != core.KindAIPersona || len(first.Messages) != 1 || first.Messages[0].Content != "第一问？" {
+		t.Fatalf("unexpected first persona question: %+v", first)
+	}
+	if _, _, err := svc.SubmitFragment(sid, 1, "第一答"); err != nil {
+		t.Fatalf("submit first answer: %v", err)
+	}
+	if err := svc.Finish(sid); err != nil {
+		t.Fatalf("finish first answer: %v", err)
+	}
+
+	// The client deliberately does not declare itself generally available here.
+	// The persona continuation must reserve and resume this exact responder.
+	second := waitPersonaAssignment(t, assignments)
+	if second.RequesterKind != core.KindAIPersona || len(second.Messages) != 3 {
+		t.Fatalf("unexpected follow-up assignment: %+v", second)
+	}
+	want := []core.Message{
+		{Role: "user", Content: "第一问？"},
+		{Role: "assistant", Content: "第一答"},
+		{Role: "user", Content: "根据第一答的第二问？"},
+	}
+	for i := range want {
+		if second.Messages[i] != want[i] {
+			t.Fatalf("follow-up message %d: got %+v want %+v", i, second.Messages[i], want[i])
+		}
+	}
+	if err := svc.Skip(sid); err != nil {
+		t.Fatalf("end targeted conversation: %v", err)
+	}
+}
+
+func waitPersonaAssignment(t *testing.T, assignments <-chan core.AssignedRequest) core.AssignedRequest {
+	t.Helper()
+	select {
+	case assignment := <-assignments:
+		return assignment
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for persona assignment")
+		return core.AssignedRequest{}
 	}
 }

@@ -18,12 +18,12 @@ test("fragment ack during IME composition is deferred and never destroys the com
     await responder.waitForTimeout(1_600);
     await expect(requester.getByTestId("request-answer")).toHaveText("你好");
     await expect(responder.getByTestId("answer-committed")).toHaveText("");
-    await expect(responder.getByTestId("answer-draft")).toHaveText("你好shi");
+    await expect(responder.getByTestId("answer-draft")).toContainText("你好shi");
 
     await endCompositionWith(responder, "shi", "时间");
     await expect(responder.getByTestId("answer-committed")).toHaveText(/^你好(时间)?$/);
     await expect(responder.getByTestId("answer-committed")).toHaveText("你好时间", { timeout: 5_000 });
-    await expect(responder.getByTestId("answer-draft")).toHaveText("");
+    await expect(responder.getByTestId("answer-draft")).toHaveAttribute("data-empty", "true");
     await expect(requester.getByTestId("request-answer")).toHaveText("你好时间");
 
     await responder.getByTestId("answer-finish").click();
@@ -112,7 +112,7 @@ test("caret can edit the middle of the draft without snapping to the end", async
     await responder.keyboard.type("ac");
     await responder.keyboard.press("ArrowLeft");
     await responder.keyboard.type("bd");
-    await expect(responder.getByTestId("answer-draft")).toHaveText("abdc");
+    await expect(responder.getByTestId("answer-draft")).toContainText("abdc");
     await expect(responder.getByTestId("answer-committed")).toHaveText("abdc", { timeout: 5_000 });
   } finally {
     await responder.context().close().catch(() => undefined);
@@ -154,6 +154,77 @@ test("undo cannot resurrect committed text into the stream", async ({ browser })
   }
 });
 
+test("empty draft keeps a visible caret, focus, and scroll after commit and backspace", async ({ browser }) => {
+  const run = uniqueRun("emptyCaret");
+  const requester = await newUserPage(browser);
+  const responderContext = await browser.newContext({ viewport: { width: 390, height: 560 } });
+  const responder = await responderContext.newPage();
+  await responder.goto("/");
+  await expect(responder.getByTestId("request-prompt")).toBeVisible();
+
+  try {
+    await responder.getByTestId("mode-answer").click();
+    await responder.getByTestId("answer-online").click();
+    await requester.getByTestId("request-prompt").fill(`empty caret question ${run}`);
+    await requester.getByTestId("request-send").click();
+    await expect(responder.getByTestId("answer-incoming")).toContainText(`empty caret question ${run}`);
+
+    const draft = responder.getByTestId("answer-draft");
+    await draft.scrollIntoViewIfNeeded();
+    await responder.getByTestId("answer-editor").click();
+    await responder.keyboard.insertText("## 标题\n\n- 第一项");
+    const beforeCommitScroll = await captureScrollPosition(responder);
+    await expect(responder.getByTestId("answer-committed")).toHaveText("## 标题\n\n- 第一项", { timeout: 5_000 });
+    const committedPrefix = await responder.getByTestId("answer-committed").textContent();
+    await expect(draft).toHaveAttribute("data-empty", "true");
+    await expectStableCaret(responder, beforeCommitScroll);
+
+    // Continue without clicking, then erase the entire uncommitted suffix.
+    await responder.keyboard.insertText("待删除");
+    await responder.keyboard.press("Backspace");
+    await responder.keyboard.press("Backspace");
+    await responder.keyboard.press("Backspace");
+    await expect(draft).toHaveAttribute("data-empty", "true");
+    const afterDeleteScroll = await captureScrollPosition(responder);
+    await expectStableCaret(responder, afterDeleteScroll);
+
+    // The next input must land directly after the immutable Markdown prefix.
+    await responder.keyboard.insertText("继续输入");
+    await expect
+      .poll(() => responder.getByTestId("answer-committed").textContent())
+      .toBe(`${committedPrefix}继续输入`);
+  } finally {
+    await responderContext.close().catch(() => undefined);
+    await requester.context().close().catch(() => undefined);
+  }
+});
+
+async function captureScrollPosition(page: Page) {
+  return page.evaluate(() => ({
+    windowY: window.scrollY,
+    editorY: document.querySelector<HTMLElement>(".answer-conversation")?.scrollTop ?? 0
+  }));
+}
+
+async function expectStableCaret(page: Page, expectedScroll: { windowY: number; editorY: number }) {
+  await expect(page.getByTestId("answer-draft")).toBeFocused();
+  await expect
+    .poll(() =>
+      page.getByTestId("answer-draft").evaluate((element) => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0 || document.activeElement !== element) return false;
+        const anchor = selection.anchorNode;
+        if (!anchor || !element.contains(anchor)) return false;
+        const rect = selection.getRangeAt(0).getBoundingClientRect();
+        return rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight;
+      })
+    )
+    .toBe(true);
+  const currentScroll = await captureScrollPosition(page);
+  expect(Math.abs(currentScroll.windowY - expectedScroll.windowY)).toBeLessThanOrEqual(2);
+  expect(Math.abs(currentScroll.editorY - expectedScroll.editorY)).toBeLessThanOrEqual(2);
+}
+
 async function newUserPage(browser: Browser): Promise<Page> {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -170,7 +241,8 @@ async function startAppendComposition(page: Page, intermediateText: string) {
   await page.getByTestId("answer-draft").evaluate((element, text) => {
     const target = element as HTMLElement;
     target.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
-    target.appendChild(document.createTextNode(text));
+    const caretHost = target.querySelector<HTMLElement>("[data-caret-anchor]") ?? target;
+    caretHost.appendChild(document.createTextNode(text));
     target.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: text }));
     target.dispatchEvent(
       new InputEvent("input", {

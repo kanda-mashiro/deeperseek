@@ -52,7 +52,7 @@ test("guest can ask immediately without nickname and sees thinking until finish"
     await expect(responder.getByTestId("answer-committed")).toContainText("你是一头猪，", {
       timeout: 5_000
     });
-    await expect(responder.getByTestId("answer-draft")).toHaveText("");
+    await expect(responder.getByTestId("answer-draft")).toHaveAttribute("data-empty", "true");
     await responder.getByTestId("answer-editor").click();
     await responder.keyboard.type(`xxxx ${run}`);
     await expect(responder.getByTestId("answer-editor")).toContainText(`你是一头猪，xxxx ${run}`);

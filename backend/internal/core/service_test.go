@@ -612,6 +612,160 @@ func TestResponderCanRejectAIQuestionsWithoutBlockingHumanQueue(t *testing.T) {
 	}
 }
 
+func TestTargetedPersonaFollowUpStaysWithResponderAndSkipEndsIt(t *testing.T) {
+	svc := NewService()
+	persona := svc.PersonaSession("persona requester")
+
+	other := svc.GuestSession("other responder")
+	otherID, otherAssignments, err := svc.RegisterResponder(other.Token)
+	if err != nil {
+		t.Fatalf("register other responder: %v", err)
+	}
+	if err := svc.MarkResponderAvailable(otherID); err != nil {
+		t.Fatalf("mark other available: %v", err)
+	}
+
+	preferred := svc.GuestSession("preferred responder")
+	preferredID, preferredAssignments, err := svc.RegisterResponder(preferred.Token)
+	if err != nil {
+		t.Fatalf("register preferred responder: %v", err)
+	}
+	if err := svc.MarkResponderAvailable(preferredID); err != nil {
+		t.Fatalf("mark preferred available: %v", err)
+	}
+
+	messages := []Message{
+		{Role: "user", Content: "第一问"},
+		{Role: "assistant", Content: "第一答"},
+		{Role: "user", Content: "第二问"},
+	}
+	req, err := svc.CreateTargetedRequest(context.Background(), persona.Token, "m", messages, 0, preferredID)
+	if err != nil {
+		t.Fatalf("create targeted follow-up: %v", err)
+	}
+	if req.PreferredResponderSessionID != preferredID {
+		t.Fatalf("preferred responder not persisted: %+v", req)
+	}
+
+	select {
+	case assignment := <-preferredAssignments:
+		if assignment.RequestID != req.ID || len(assignment.Messages) != 3 {
+			t.Fatalf("unexpected preferred assignment: %+v", assignment)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("preferred responder did not receive targeted follow-up")
+	}
+	select {
+	case assignment := <-otherAssignments:
+		t.Fatalf("targeted follow-up leaked to another responder: %+v", assignment)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := svc.Skip(preferredID); err != nil {
+		t.Fatalf("skip targeted follow-up: %v", err)
+	}
+	snap, _, err := svc.RequestSnapshot(req.ID)
+	if err != nil {
+		t.Fatalf("snapshot targeted follow-up: %v", err)
+	}
+	if snap.Status != StatusAbandoned {
+		t.Fatalf("targeted skip should end conversation, got %s", snap.Status)
+	}
+	if svc.QueuedRequestCount() != 0 {
+		t.Fatal("targeted follow-up must not be requeued after skip")
+	}
+}
+
+func TestResumeResponderPreservesAIQuestionPreference(t *testing.T) {
+	svc := NewService()
+	responder := svc.GuestSession("responder")
+	responderID, assignments, err := svc.RegisterResponder(responder.Token)
+	if err != nil {
+		t.Fatalf("register responder: %v", err)
+	}
+	if err := svc.MarkResponderAvailable(responderID, false); err != nil {
+		t.Fatalf("store responder preference: %v", err)
+	}
+
+	persona := svc.PersonaSession("persona")
+	req, err := svc.CreateTargetedRequest(context.Background(), persona.Token, "m", []Message{{Role: "user", Content: "追问"}}, 0, responderID)
+	if err != nil {
+		t.Fatalf("create targeted request: %v", err)
+	}
+	if err := svc.ResumeResponder(responderID); err != nil {
+		t.Fatalf("resume responder: %v", err)
+	}
+	select {
+	case assignment := <-assignments:
+		t.Fatalf("resume must preserve AI-question opt-out, got %+v", assignment)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if snap, _, _ := svc.RequestSnapshot(req.ID); snap.Status != StatusQueued {
+		t.Fatalf("opted-out targeted request should remain queued, got %s", snap.Status)
+	}
+}
+
+func TestBusyResponderPreferenceAppliesToNextPersonaTurn(t *testing.T) {
+	svc := NewService()
+	responder := svc.GuestSession("responder")
+	responderID, assignments, _ := svc.RegisterResponder(responder.Token)
+	_ = svc.MarkResponderAvailable(responderID, true)
+	requester := svc.GuestSession("requester")
+	_, _ = svc.CreateRequest(context.Background(), requester.Token, "m", []Message{{Role: "user", Content: "human question"}}, 0)
+	select {
+	case <-assignments:
+	case <-time.After(time.Second):
+		t.Fatal("human question was not assigned")
+	}
+	if err := svc.MarkResponderAvailable(responderID, false); err != nil {
+		t.Fatalf("change busy responder preference: %v", err)
+	}
+	if _, _, err := svc.SubmitFragment(responderID, 1, "answer"); err != nil {
+		t.Fatalf("submit answer: %v", err)
+	}
+	if err := svc.Finish(responderID); err != nil {
+		t.Fatalf("finish answer: %v", err)
+	}
+
+	persona := svc.PersonaSession("persona")
+	_, err := svc.CreateTargetedRequest(context.Background(), persona.Token, "m", []Message{{Role: "user", Content: "follow-up"}}, 0, responderID)
+	if err != nil {
+		t.Fatalf("create targeted follow-up: %v", err)
+	}
+	if err := svc.ResumeResponder(responderID); err != nil {
+		t.Fatalf("resume responder: %v", err)
+	}
+	select {
+	case assignment := <-assignments:
+		t.Fatalf("busy preference change was lost, got %+v", assignment)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSkippingInitialPersonaQuestionEndsConversation(t *testing.T) {
+	svc := NewService()
+	responder := svc.GuestSession("responder")
+	responderID, assignments, _ := svc.RegisterResponder(responder.Token)
+	_ = svc.MarkResponderAvailable(responderID, true)
+	persona := svc.PersonaSession("persona")
+	req, err := svc.CreateRequest(context.Background(), persona.Token, "m", []Message{{Role: "user", Content: "第一问"}}, 0)
+	if err != nil {
+		t.Fatalf("create persona question: %v", err)
+	}
+	select {
+	case <-assignments:
+	case <-time.After(time.Second):
+		t.Fatal("persona question was not assigned")
+	}
+	if err := svc.Skip(responderID); err != nil {
+		t.Fatalf("skip persona question: %v", err)
+	}
+	snap, _, _ := svc.RequestSnapshot(req.ID)
+	if snap.Status != StatusAbandoned {
+		t.Fatalf("skipped persona conversation should be abandoned, got %s", snap.Status)
+	}
+}
+
 func TestOnlineHumanResponderCountExcludesPersonas(t *testing.T) {
 	svc := NewService()
 	human := svc.GuestSession("human")

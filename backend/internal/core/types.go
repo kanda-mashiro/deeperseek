@@ -91,15 +91,18 @@ type Request struct {
 	ResponderGuest     bool
 	ResponderKind      string
 	ResponderDisplay   string
-	BoardEligible      bool
-	FrozenPoints       int
-	QuestionCharged    bool
-	OutputLimit        int
-	FinishReason       FinishReason
-	Reaction           Reaction
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	CompletedAt        time.Time
+	// PreferredResponderSessionID reserves persona follow-ups for the human who
+	// answered the preceding turn. Empty means normal queue matching.
+	PreferredResponderSessionID string
+	BoardEligible               bool
+	FrozenPoints                int
+	QuestionCharged             bool
+	OutputLimit                 int
+	FinishReason                FinishReason
+	Reaction                    Reaction
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	CompletedAt                 time.Time
 }
 
 type Conversation struct {

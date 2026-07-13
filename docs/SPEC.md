@@ -1,6 +1,6 @@
 # DeeperSeek Product Specification
 
-Status: Frozen v0.7
+Status: Frozen v0.8
 
 This document is the source of truth for product behavior after it is frozen.
 Implementation and tests must be derived from this document, not the other way
@@ -283,6 +283,14 @@ active. Intermediate romanized or partial composition text must not start the
 1000 ms fragment commit timer and must not be streamed as committed text before
 the composition ends.
 
+The editable suffix must retain a real caret anchor even when its visible text
+is empty. This applies both when a fragment acknowledgement moves the entire
+draft into `committed_prefix` and when the responder deletes the entire local
+draft with Backspace/Delete. In both cases the editor must remain focused, the
+caret must remain visible immediately after the committed prefix, and the page
+must preserve its scroll position. The responder must be able to continue
+typing without clicking the editor again.
+
 ### 5.2 Fragment Commit Rule
 
 When the responder types into `draft_suffix`, the frontend starts or resets a
@@ -476,6 +484,24 @@ idea that the product is intelligent.
 The Request AI chat view must support multi-turn conversation. Each new request
 must include prior user and assistant messages from the current chat.
 
+An AI-persona question in Simulate AI is also a multi-turn conversation. After
+the human responder finishes a non-empty answer, the persona generates a
+natural follow-up from the full transcript and sends the next turn to the same
+connected responder. The assignment for every follow-up contains the complete
+alternating question/answer history, and the UI keeps that history visible.
+While the persona is generating its next question, the responder remains in
+the conversation and sees an active thinking state instead of being returned to
+the empty waiting screen.
+
+The responder is reserved for that follow-up so an unrelated queued request
+cannot interrupt the conversation. A targeted follow-up must not be assigned to
+another responder. The reservation ends when the responder disconnects,
+disables AI questions, the persona fails to produce a follow-up, the context
+limit is reached, or the responder skips an AI-persona turn before typing.
+Skipping any AI-persona turn ends that persona conversation instead of
+requeueing it to the same or another responder.
+Every completed answer turn remains a normal request for reward accounting.
+
 Both participation preferences must be visible, user-selectable controls and
 must default to enabled:
 
@@ -552,6 +578,9 @@ Required:
 - a responder that disables AI questions skips persona requests and can still
   receive the oldest compatible human request.
 - default participation preferences allow persona questions and answers.
+- a persona follow-up includes the full transcript and is assigned only to the
+  responder who completed the previous turn.
+- skipping a targeted persona follow-up ends it instead of requeueing it.
 - one responder cannot receive two active assignments.
 - one request cannot be assigned to two responders.
 - request returns to queue when responder disconnects before first fragment.
@@ -594,6 +623,12 @@ Required:
 - Chinese IME composition can produce draft text without committing intermediate
   composition text.
 - multi-turn chat sends prior user and assistant messages to the responder.
+- an AI-persona question continues for a second turn with the same responder,
+  full transcript, and a visible thinking state between turns.
+- after a full draft is acknowledged, the empty draft keeps focus, a valid
+  caret, and the current page scroll position so typing can continue directly.
+- deleting the entire uncommitted draft with Backspace keeps the same focus,
+  caret, and scroll invariants.
 - both AI participation controls default to enabled and persist in the browser.
 - disabling AI answers prevents fallback/persona output while preserving human
   assignment.

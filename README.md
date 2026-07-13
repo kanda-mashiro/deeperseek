@@ -19,6 +19,11 @@
 - Requesters and responders can independently opt out of AI answers or AI
   questions. Both preferences default to enabled and AI-generated traffic is
   marked as `AI回答` or `AI提问` in the UI.
+- AI-persona questions continue as a contextual multi-turn conversation with
+  the same responder. The transcript stays visible while the persona prepares
+  its next question.
+- The append-only responder editor preserves its caret, focus, and viewport
+  when a commit or repeated Backspace leaves the editable suffix empty.
 - Optional fallback responder that answers through an OpenAI-compatible upstream:
   immediately when no human responder is online, or after 10 seconds when a
   human responder is connected but has not started answering.
@@ -104,9 +109,13 @@ The E2E suite covers:
 - Use the fallback responder when no human accepts a queued request.
 - Opt out of AI questions or answers without blocking compatible human work.
 - Display explicit `AI提问` and `AI回答` source markers.
+- Continue an AI-persona question for another turn with the same responder and
+  full transcript.
 - Keep a thinking animation visible until finish.
 - Keep committed answer text inline while making it immutable.
 - Preserve Chinese IME composition behavior in the responder editor.
+- Preserve the responder caret and scroll position when the local draft becomes
+  empty after a commit or deletion.
 - Switch light/dark/system themes and record a browser transition video.
 - Like and then dislike the answer.
 - Log out and log back in.

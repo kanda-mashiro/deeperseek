@@ -26,8 +26,11 @@ func (b *Backend) requestKindKey(reqID string) string {
 func (b *Backend) requestAIAnswerKey(reqID string) string {
 	return b.key("request", reqID, "allow-ai-answer")
 }
+func (b *Backend) requestPreferredResponderKey(reqID string) string {
+	return b.key("request", reqID, "preferred-responder")
+}
 
-func (b *Backend) setRequestRouting(ctx context.Context, reqID, requesterKind string, allowAIAnswers bool) error {
+func (b *Backend) setRequestRouting(ctx context.Context, reqID, requesterKind string, allowAIAnswers bool, preferredResponderSessionID string) error {
 	allow := "0"
 	if allowAIAnswers {
 		allow = "1"
@@ -35,13 +38,14 @@ func (b *Backend) setRequestRouting(ctx context.Context, reqID, requesterKind st
 	_, err := b.rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.Set(ctx, b.requestKindKey(reqID), requesterKind, 0)
 		pipe.Set(ctx, b.requestAIAnswerKey(reqID), allow, 0)
+		pipe.Set(ctx, b.requestPreferredResponderKey(reqID), preferredResponderSessionID, 0)
 		return nil
 	})
 	return err
 }
 
 func (b *Backend) clearRequestRouting(ctx context.Context, reqID string) error {
-	return b.rdb.Del(ctx, b.requestKindKey(reqID), b.requestAIAnswerKey(reqID)).Err()
+	return b.rdb.Del(ctx, b.requestKindKey(reqID), b.requestAIAnswerKey(reqID), b.requestPreferredResponderKey(reqID)).Err()
 }
 
 // --- waiting queue (oldest at head) ---
@@ -93,7 +97,7 @@ func (b *Backend) removeAvailable(ctx context.Context, sid string) error {
 // KEYS: [1]=avail [2]=queue [3]=presence [4]=responder-ai-pref [5]=responder-kind
 // ARGV: [1]=min-fresh-score [2]=lock-ttl-seconds [3]=lock-prefix
 //
-//	[4]=request-prefix [5]=kind-suffix [6]=allow-ai-answer-suffix
+//	[4]=request-prefix [5]=kind-suffix [6]=allow-ai-answer-suffix [7]=preferred-responder-suffix
 var assignScript = redis.NewScript(`
 local minfresh = tonumber(ARGV[1])
 local lockttl = tonumber(ARGV[2])
@@ -115,9 +119,13 @@ while true do
     local responderkind = redis.call('HGET', KEYS[5], sid) or 'human'
     local queued = redis.call('LRANGE', KEYS[2], 0, -1)
     for _, reqid in ipairs(queued) do
-      local requestkind = redis.call('GET', ARGV[4] .. reqid .. ARGV[5]) or 'human'
-      local allowaianswer = redis.call('GET', ARGV[4] .. reqid .. ARGV[6]) or '1'
-      local compatible = true
+		local requestkind = redis.call('GET', ARGV[4] .. reqid .. ARGV[5]) or 'human'
+		local allowaianswer = redis.call('GET', ARGV[4] .. reqid .. ARGV[6]) or '1'
+		local preferred = redis.call('GET', ARGV[4] .. reqid .. ARGV[7]) or ''
+		local compatible = true
+		if preferred ~= '' and preferred ~= sid then
+			compatible = false
+		end
       if responderkind == 'ai_persona' and allowaianswer ~= '1' then
         compatible = false
       end
@@ -145,7 +153,7 @@ func (b *Backend) assignNext(ctx context.Context) (string, string, bool, error) 
 	minFresh := b.clock().Add(-presenceTTL).UnixMilli()
 	res, err := assignScript.Run(ctx, b.rdb,
 		[]string{b.availKey(), b.queueKey(), b.presenceKey(), b.responderAIKey(), b.responderKindKey()},
-		minFresh, int(assignLockTTL.Seconds()), b.key("lock")+":", b.key("request")+":", ":kind", ":allow-ai-answer").Result()
+		minFresh, int(assignLockTTL.Seconds()), b.key("lock")+":", b.key("request")+":", ":kind", ":allow-ai-answer", ":preferred-responder").Result()
 	if err == redis.Nil || res == nil {
 		return "", "", false, nil
 	}

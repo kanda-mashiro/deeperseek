@@ -1,4 +1,4 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -882,6 +882,8 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
   const [tab, setTab] = useState<"work" | "board">("work");
   const [connected, setConnected] = useState(false);
   const [assignment, setAssignment] = useState<AssignedRequest | null>(null);
+  const [continuingAI, setContinuingAI] = useState(false);
+  const [continuationMessages, setContinuationMessages] = useState<Message[]>([]);
   const [committedFrags, setCommittedFrags] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [shiftCount, setShiftCount] = useState(0);
@@ -897,6 +899,9 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
   const pendingCommitRef = useRef("");
   const clientSeqRef = useRef(1);
   const acceptAIQuestionsRef = useRef(acceptAIQuestions);
+  const assignmentRef = useRef<AssignedRequest | null>(null);
+  const continuingAIRef = useRef(false);
+  const finishingAIRef = useRef(false);
 
   useEffect(() => {
     acceptAIQuestionsRef.current = acceptAIQuestions;
@@ -920,8 +925,17 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     editorRef.current?.reset();
   };
 
+  const clearAIContinuation = () => {
+    continuingAIRef.current = false;
+    finishingAIRef.current = false;
+    setContinuingAI(false);
+    setContinuationMessages([]);
+  };
+
   const backToWaiting = () => {
+    assignmentRef.current = null;
     setAssignment(null);
+    clearAIContinuation();
     resetAnswerState();
     setActivity("在线等锅");
     const ws = wsRef.current;
@@ -967,7 +981,12 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === "assigned") {
+        assignmentRef.current = msg;
         setAssignment(msg);
+        continuingAIRef.current = false;
+        finishingAIRef.current = false;
+        setContinuingAI(false);
+        setContinuationMessages([]);
         resetAnswerState();
         setError("");
         setActivity("接到问题");
@@ -977,7 +996,17 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
       }
       if (msg.type === "finish_ack") {
         setShiftCount((value) => value + 1);
-        backToWaiting();
+        if (finishingAIRef.current && acceptAIQuestionsRef.current) {
+          finishingAIRef.current = false;
+          assignmentRef.current = null;
+          setAssignment(null);
+          continuingAIRef.current = true;
+          setContinuingAI(true);
+          resetAnswerState();
+          setActivity("AI 正在追问");
+        } else {
+          backToWaiting();
+        }
       }
       if (msg.type === "balance") {
         onAuth({ ...auth, balance: msg.balance });
@@ -992,7 +1021,9 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     ws.onclose = () => {
       setConnected(false);
       setActivity("离线摸鱼");
+      assignmentRef.current = null;
       setAssignment(null);
+      clearAIContinuation();
       resetAnswerState();
       wsRef.current = null;
     };
@@ -1007,12 +1038,30 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     acceptAIQuestionsRef.current = value;
     setAcceptAIQuestions(value);
     const ws = wsRef.current;
-    if (!assignment && ws && ws.readyState === WebSocket.OPEN) {
+    if (!value && continuingAIRef.current) {
+      clearAIContinuation();
+      setActivity("在线等锅");
+    }
+    if (!assignmentRef.current && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "available", accept_ai_questions: value }));
     }
   };
 
   useEffect(() => () => wsRef.current?.close(), []);
+
+  useEffect(() => {
+    if (!continuingAI) return;
+    const timer = window.setTimeout(() => {
+      if (!continuingAIRef.current) return;
+      clearAIContinuation();
+      setActivity("在线等锅");
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        sendAvailable(ws);
+      }
+    }, 130_000);
+    return () => window.clearTimeout(timer);
+  }, [continuingAI]);
 
   useEffect(() => {
     if (!assignment || !draft || pendingCommit || draft === rejectedCommit) {
@@ -1035,13 +1084,24 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
     return Math.max(0, Math.round((Date.now() - new Date(assignment.created_at).getTime()) / 1000));
   }, [assignment]);
 
-  const finish = () => wsRef.current?.send(JSON.stringify({ type: "finish" }));
+  const finish = () => {
+    const current = assignmentRef.current;
+    const continueWithAI = current?.requester_kind === "ai_persona" && acceptAIQuestionsRef.current;
+    finishingAIRef.current = continueWithAI;
+    if (continueWithAI && current) {
+      setContinuationMessages([...current.messages, { role: "assistant", content: committed }]);
+    }
+    wsRef.current?.send(JSON.stringify({ type: "finish" }));
+  };
   const skip = () => wsRef.current?.send(JSON.stringify({ type: "skip" }));
+
+  const visibleMessages = assignment?.messages ?? continuationMessages;
+  const personaConversation = assignment?.requester_kind === "ai_persona" || continuingAI;
 
   return (
     <section className="workspace answer-workspace">
       <div className="operator-panel">
-        <div className={`status-orbit ${connected ? (assignment ? "busy" : "live") : ""}`}>
+        <div className={`status-orbit ${connected ? (assignment || continuingAI ? "busy" : "live") : ""}`}>
           <Bot size={28} />
         </div>
         <div>
@@ -1100,7 +1160,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
         <div className="pane-head">
           <div className="pane-title">
             <h3>对话现场</h3>
-            {assignment?.requester_kind === "ai_persona" && (
+            {personaConversation && (
               <span className="ai-source-badge question" data-testid="ai-question-badge">
                 AI提问
               </span>
@@ -1114,18 +1174,32 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
         </div>
         <div className="answer-conversation">
           <div className="incoming-turns" data-testid="answer-incoming">
-            {assignment ? (
-              assignment.messages.map((message, index) => (
+            {visibleMessages.length > 0 ? (
+              visibleMessages.map((message, index) => (
                 <article
                   className={message.role === "assistant" ? "turn ai-turn" : "turn user-turn"}
                   key={index}
                 >
-                  <span className="turn-tag">{message.role === "assistant" ? "上一位假 AI" : "用户"}</span>
+                  <span className="turn-tag">
+                    {message.role === "assistant"
+                      ? personaConversation
+                        ? "你 · 上一轮回答"
+                        : "上一位假 AI"
+                      : personaConversation
+                        ? "AI 提问者"
+                        : "用户"}
+                  </span>
                   <span className="turn-body">{message.content}</span>
                 </article>
               ))
             ) : (
               <p className="muted answer-empty">暂无问题，AI 工厂还没派活，继续摸鱼。</p>
+            )}
+            {continuingAI && (
+              <article className="turn user-turn followup-wait" data-testid="answer-ai-followup-wait">
+                <span className="turn-tag">AI 提问者 · 正在组织下一问</span>
+                <WaitingLine />
+              </article>
             )}
           </div>
           {assignment && (
@@ -1155,7 +1229,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
               disabled={!assignment || committed.length > 0}
             >
               <SkipForward size={17} />
-              跳过
+              {assignment?.requester_kind === "ai_persona" ? "结束" : "跳过"}
             </button>
             <button
               className="primary"
@@ -1164,7 +1238,7 @@ function AnswerPanel({ auth, onAuth }: { auth: AuthResult; onAuth: (auth: AuthRe
               disabled={!assignment || committed.length === 0}
             >
               <Check size={17} />
-              收工
+              {assignment?.requester_kind === "ai_persona" ? "回复 AI" : "收工"}
             </button>
           </div>
         </div>
@@ -1344,13 +1418,33 @@ const InlineAnswerEditor = forwardRef<
   const composingRef = useRef(false);
   const queuedCommitsRef = useRef<string[]>([]);
   const lastDraftRef = useRef("");
+  const didAutoFocusRef = useRef(false);
+  const viewportRestoreRef = useRef<{ x: number; y: number; editorScrollTop: number; caretOffset: number } | null>(null);
 
-  const draftText = () => draftRef.current?.textContent ?? "";
+  const draftText = () => visibleDraftText(draftRef.current);
 
   const syncDraftFromDOM = () => {
     if (composingRef.current) return;
+    const span = draftRef.current;
+    if (!span) return;
+    const selection = window.getSelection();
+    const caretOffset = Math.min(selectionStartOffset(span, selection), maxLength);
     const next = draftText().slice(0, maxLength);
+    const anchor = span.querySelector<HTMLElement>("[data-caret-anchor]");
+    const normalized =
+      anchor &&
+      anchor === span.lastChild &&
+      span.childNodes.length === 1 &&
+      anchor.textContent === draftCaretAnchor + next;
+    if (!normalized || draftText().length > maxLength) {
+      setDraftDOM(span, next, Math.min(caretOffset, next.length));
+    } else {
+      span.dataset.empty = String(next.length === 0);
+    }
     lastDraftRef.current = next;
+    if (viewportRestoreRef.current) {
+      viewportRestoreRef.current.caretOffset = Math.min(caretOffset, next.length);
+    }
     onDraftChange(next);
   };
 
@@ -1362,9 +1456,9 @@ const InlineAnswerEditor = forwardRef<
     if (inputType === "historyUndo" || inputType === "historyRedo") {
       const span = draftRef.current;
       if (span && !composingRef.current) {
-        span.textContent = lastDraftRef.current;
+        setDraftDOM(span, lastDraftRef.current, lastDraftRef.current.length);
         if (document.activeElement === span) {
-          placeCaretAtEnd(span);
+          placeCaretAtDraftOffset(span, lastDraftRef.current.length);
         }
       }
       return;
@@ -1378,29 +1472,42 @@ const InlineAnswerEditor = forwardRef<
       onCommitted(text, "");
       return;
     }
-    span.normalize();
-    const node = span.firstChild;
-    if (node?.nodeType === Node.TEXT_NODE && (node as Text).data.startsWith(text)) {
-      (node as Text).deleteData(0, text.length);
+    const current = draftText();
+    let remaining: string;
+    if (current.startsWith(text)) {
+      remaining = current.slice(text.length);
     } else {
       // acked text must never survive in the draft, or it would be re-sent as new text
-      const current = span.textContent ?? "";
       const occurrence = current.indexOf(text);
       if (occurrence >= 0) {
-        span.textContent = current.slice(0, occurrence) + current.slice(occurrence + text.length);
+        remaining = current.slice(0, occurrence) + current.slice(occurrence + text.length);
       } else {
         let shared = 0;
         while (shared < text.length && shared < current.length && text[shared] === current[shared]) {
           shared += 1;
         }
-        span.textContent = current.slice(shared);
-      }
-      if (document.activeElement === span) {
-        placeCaretAtEnd(span);
+        remaining = current.slice(shared);
       }
     }
-    lastDraftRef.current = span.textContent ?? "";
-    onCommitted(text, lastDraftRef.current);
+    const focused = document.activeElement === span;
+    const selection = window.getSelection();
+    const previousOffset = selectionStartOffset(span, selection);
+    const nextOffset = Math.min(remaining.length, Math.max(0, previousOffset - text.length));
+    viewportRestoreRef.current = focused
+      ? {
+          x: window.scrollX,
+          y: window.scrollY,
+          editorScrollTop: span.closest<HTMLElement>(".answer-conversation")?.scrollTop ?? 0,
+          caretOffset: nextOffset
+        }
+      : null;
+    setDraftDOM(span, remaining, nextOffset);
+    if (focused) {
+      span.focus({ preventScroll: true });
+      placeCaretAtDraftOffset(span, nextOffset);
+    }
+    lastDraftRef.current = remaining;
+    onCommitted(text, remaining);
   };
 
   const flushQueuedCommits = () => {
@@ -1423,7 +1530,7 @@ const InlineAnswerEditor = forwardRef<
       lastDraftRef.current = "";
       const span = draftRef.current;
       if (span) {
-        span.textContent = "";
+        setDraftDOM(span, "", 0);
       }
     }
   }));
@@ -1440,12 +1547,14 @@ const InlineAnswerEditor = forwardRef<
       const span = draftRef.current;
       if (span) {
         // truncate before the flush: pre-flush content matches the closure's budget
-        const text = span.textContent ?? "";
+        const text = visibleDraftText(span);
         if (text.length > maxLength) {
-          span.textContent = text.slice(0, maxLength);
+          setDraftDOM(span, text.slice(0, maxLength), maxLength);
           if (document.activeElement === span) {
-            placeCaretAtEnd(span);
+            placeCaretAtDraftOffset(span, maxLength);
           }
+        } else {
+          ensureDraftAnchor(span);
         }
       }
       flushQueuedCommits();
@@ -1467,7 +1576,8 @@ const InlineAnswerEditor = forwardRef<
       return;
     }
     span.focus();
-    placeCaretAtEnd(span);
+    ensureDraftAnchor(span);
+    placeCaretAtDraftOffset(span, draftText().length);
   };
 
   const protectDraftLimit = (event: React.FormEvent<HTMLSpanElement>) => {
@@ -1481,6 +1591,18 @@ const InlineAnswerEditor = forwardRef<
       return;
     }
     const span = draftRef.current;
+    if (span && document.activeElement === span) {
+      viewportRestoreRef.current = {
+        x: window.scrollX,
+        y: window.scrollY,
+        editorScrollTop: span.closest<HTMLElement>(".answer-conversation")?.scrollTop ?? 0,
+        caretOffset: Math.min(selectionStartOffset(span, window.getSelection()), draftText().length)
+      };
+    }
+    if (inputType.startsWith("delete") && draftText().length === 0) {
+      event.preventDefault();
+      return;
+    }
     if (span && pendingLength > 0) {
       // the in-flight fragment is the draft head; edits inside it would desync ack reconciliation
       const selection = window.getSelection();
@@ -1512,6 +1634,27 @@ const InlineAnswerEditor = forwardRef<
     }
   };
 
+  useLayoutEffect(() => {
+    const span = draftRef.current;
+    if (!span) return;
+    ensureDraftAnchor(span);
+    const restore = viewportRestoreRef.current;
+    if (restore) {
+      span.focus({ preventScroll: true });
+      placeCaretAtDraftOffset(span, restore.caretOffset);
+      window.scrollTo(restore.x, restore.y);
+      const scrollContainer = span.closest<HTMLElement>(".answer-conversation");
+      if (scrollContainer) scrollContainer.scrollTop = restore.editorScrollTop;
+      viewportRestoreRef.current = null;
+      return;
+    }
+    if (!disabled && !didAutoFocusRef.current) {
+      didAutoFocusRef.current = true;
+      span.focus({ preventScroll: true });
+      placeCaretAtDraftOffset(span, draftText().length);
+    }
+  });
+
   return (
     <div className="answer-editor" data-testid="answer-editor">
       <div className={disabled ? "answer-editor-body disabled" : "answer-editor-body"} onClick={focusDraft}>
@@ -1526,6 +1669,7 @@ const InlineAnswerEditor = forwardRef<
           aria-disabled={disabled}
           className="draft-inline"
           contentEditable={!disabled}
+          data-empty="true"
           data-placeholder={committedFrags.length > 0 ? "" : "在这里装作 AI 思考"}
           data-testid="answer-draft"
           onBeforeInput={protectDraftLimit}
@@ -1653,15 +1797,55 @@ function selectionStartOffset(span: HTMLElement, selection: Selection | null): n
   const probe = document.createRange();
   probe.selectNodeContents(span);
   probe.setEnd(range.startContainer, range.startOffset);
-  return probe.toString().length;
+  return probe.toString().split(draftCaretAnchor).join("").length;
 }
 
-function placeCaretAtEnd(element: HTMLElement) {
+const draftCaretAnchor = "\u200b";
+
+function visibleDraftText(element: HTMLElement | null) {
+  return (element?.textContent ?? "").split(draftCaretAnchor).join("");
+}
+
+function ensureDraftAnchor(element: HTMLElement) {
+  const anchors = Array.from(element.querySelectorAll<HTMLElement>("[data-caret-anchor]"));
+  const anchor = anchors.shift() ?? document.createElement("span");
+  anchor.dataset.caretAnchor = "true";
+  if (!(anchor.textContent ?? "").includes(draftCaretAnchor)) {
+    anchor.textContent = draftCaretAnchor + (anchor.textContent ?? "");
+  }
+  for (const duplicate of anchors) duplicate.remove();
+  if (anchor !== element.lastChild) element.appendChild(anchor);
+  element.dataset.empty = String(visibleDraftText(element).length === 0);
+  return anchor;
+}
+
+function setDraftDOM(element: HTMLElement, text: string, caretOffset: number) {
+  element.textContent = "";
+  const anchor = document.createElement("span");
+  anchor.dataset.caretAnchor = "true";
+  anchor.textContent = draftCaretAnchor + text;
+  element.appendChild(anchor);
+  element.dataset.empty = String(text.length === 0);
+  placeCaretAtDraftOffset(element, caretOffset);
+}
+
+function placeCaretAtDraftOffset(element: HTMLElement, requestedOffset: number) {
   const selection = window.getSelection();
   if (!selection) return;
+  const anchor = ensureDraftAnchor(element);
+  let remaining = Math.max(0, requestedOffset);
   const range = document.createRange();
-  range.selectNodeContents(element);
-  range.collapse(false);
+  anchor.normalize();
+  const node = anchor.firstChild ?? anchor.appendChild(document.createTextNode(draftCaretAnchor));
+  const raw = node.textContent ?? draftCaretAnchor;
+  let rawOffset = 0;
+  while (rawOffset < raw.length && raw[rawOffset] === draftCaretAnchor) rawOffset++;
+  while (rawOffset < raw.length && remaining > 0) {
+    if (raw[rawOffset] !== draftCaretAnchor) remaining--;
+    rawOffset++;
+  }
+  range.setStart(node, rawOffset);
+  range.collapse(true);
   selection.removeAllRanges();
   selection.addRange(range);
 }

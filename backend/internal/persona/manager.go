@@ -19,29 +19,31 @@ import (
 )
 
 type Config struct {
-	Enabled       bool
-	PollInterval  time.Duration
-	LeaseTTL      time.Duration
-	MaxResponders int           // cap on concurrent persona responders
-	TargetQueue   int           // keep roughly this many questions waiting for humans
-	AnswerRunes   int           // max answer length requested from the LLM
-	ChunkRunes    int           // fragment size for human-like streaming
-	ChunkDelay    time.Duration // delay between fragments
-	SkipBackoff   time.Duration // pause after skipping so we don't hot-loop
-	LLM           llm.Config
+	Enabled              bool
+	PollInterval         time.Duration
+	LeaseTTL             time.Duration
+	MaxResponders        int           // cap on concurrent persona responders
+	TargetQueue          int           // keep roughly this many questions waiting for humans
+	AnswerRunes          int           // max answer length requested from the LLM
+	ChunkRunes           int           // fragment size for human-like streaming
+	ChunkDelay           time.Duration // delay between fragments
+	SkipBackoff          time.Duration // pause after skipping so we don't hot-loop
+	FollowUpQueueTimeout time.Duration // stop a targeted continuation if its responder no longer accepts it
+	LLM                  llm.Config
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Enabled:       true,
-		PollInterval:  5 * time.Second,
-		LeaseTTL:      15 * time.Second,
-		MaxResponders: 2,
-		TargetQueue:   2,
-		AnswerRunes:   600,
-		ChunkRunes:    6,
-		ChunkDelay:    90 * time.Millisecond,
-		SkipBackoff:   2 * time.Second,
+		Enabled:              true,
+		PollInterval:         5 * time.Second,
+		LeaseTTL:             15 * time.Second,
+		MaxResponders:        2,
+		TargetQueue:          2,
+		AnswerRunes:          600,
+		ChunkRunes:           6,
+		ChunkDelay:           90 * time.Millisecond,
+		SkipBackoff:          2 * time.Second,
+		FollowUpQueueTimeout: 30 * time.Second,
 	}
 }
 
@@ -50,10 +52,11 @@ type Manager struct {
 	cfg     Config
 	podID   string
 
-	mu         sync.Mutex
-	responders map[string]context.CancelFunc // sessionID -> cancel
-	posting    bool
-	nameSeq    int
+	mu                  sync.Mutex
+	responders          map[string]context.CancelFunc // sessionID -> cancel
+	posting             bool
+	activeConversations int
+	nameSeq             int
 }
 
 func NewManager(backend core.Backend, cfg Config) *Manager {
@@ -118,7 +121,8 @@ func (m *Manager) tick(ctx context.Context) {
 	m.ensureResponders(ctx, want)
 
 	// seed questions so human responders have work to earn points on
-	if m.backend.QueuedRequestCount() < m.cfg.TargetQueue && m.beginPosting() {
+	queued := m.backend.QueuedRequestCount()
+	if queued < m.cfg.TargetQueue && m.beginPosting() {
 		go m.postQuestion(ctx)
 	}
 }
@@ -228,31 +232,109 @@ func (m *Manager) answer(ctx context.Context, sid string, a core.AssignedRequest
 }
 
 func (m *Manager) postQuestion(ctx context.Context) {
+	active := false
 	defer func() {
 		m.mu.Lock()
 		m.posting = false
+		if active {
+			m.activeConversations--
+		}
 		m.mu.Unlock()
 	}()
 	auth := m.backend.PersonaSession(m.nextName())
 	q, err := m.cfg.LLM.Complete(ctx, questionMessages())
-	q = strings.TrimSpace(q)
+	q = trimQuestion(q)
 	if err != nil || q == "" {
 		return
 	}
-	if runes := []rune(q); len(runes) > 500 {
-		q = string(runes[:500])
+	req, err := m.backend.CreateRequest(ctx, auth.Token, "deeperseek-human", []core.Message{{Role: "user", Content: q}}, m.cfg.AnswerRunes)
+	if err != nil {
+		return
 	}
-	_, _ = m.backend.CreateRequest(ctx, auth.Token, "deeperseek-human", []core.Message{{Role: "user", Content: q}}, m.cfg.AnswerRunes)
+	m.mu.Lock()
+	m.posting = false
+	m.activeConversations++
+	active = true
+	m.mu.Unlock()
+	m.continueQuestionConversation(ctx, auth, req)
 }
 
 func (m *Manager) beginPosting() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.posting {
+	if m.posting || m.activeConversations >= m.cfg.TargetQueue {
 		return false
 	}
 	m.posting = true
 	return true
+}
+
+func (m *Manager) continueQuestionConversation(ctx context.Context, auth core.AuthResult, current *core.Request) {
+	history := append([]core.Message(nil), current.Messages...)
+	for {
+		snap, answer, ok := m.waitForPersonaAnswer(ctx, current)
+		if !ok {
+			return
+		}
+		responderID := snap.ResponderSessionID
+		history = append(history, core.Message{Role: "assistant", Content: answer})
+
+		question, err := m.cfg.LLM.Complete(ctx, followUpQuestionMessages(history))
+		question = trimQuestion(question)
+		if err != nil || question == "" {
+			_ = m.backend.ResumeResponder(responderID)
+			return
+		}
+		history = append(history, core.Message{Role: "user", Content: question})
+		next, err := m.backend.CreateTargetedRequest(ctx, auth.Token, "deeperseek-human", history, m.cfg.AnswerRunes, responderID)
+		if err != nil {
+			_ = m.backend.ResumeResponder(responderID)
+			return
+		}
+		if err := m.backend.ResumeResponder(responderID); err != nil {
+			m.backend.CancelBeforeFirstFragment(next.ID)
+			return
+		}
+		current = next
+	}
+}
+
+func (m *Manager) waitForPersonaAnswer(ctx context.Context, req *core.Request) (*core.Request, string, bool) {
+	interval := m.cfg.PollInterval
+	if interval <= 0 || interval > 250*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var queuedDeadline time.Time
+	if req.PreferredResponderSessionID != "" && m.cfg.FollowUpQueueTimeout > 0 {
+		queuedDeadline = time.Now().Add(m.cfg.FollowUpQueueTimeout)
+	}
+	for {
+		snap, answer, err := m.backend.RequestSnapshot(req.ID)
+		if err != nil {
+			return nil, "", false
+		}
+		if snap.Status == core.StatusCompleted {
+			answer = strings.TrimSpace(answer)
+			if answer == "" || snap.ResponderKind != core.KindHuman || snap.ResponderSessionID == "" {
+				return nil, "", false
+			}
+			return snap, answer, true
+		}
+		if snap.Status == core.StatusAbandoned || snap.Status == core.StatusTimeoutCompleted {
+			return nil, "", false
+		}
+		if !queuedDeadline.IsZero() && snap.Status == core.StatusQueued && time.Now().After(queuedDeadline) {
+			m.backend.CancelBeforeFirstFragment(req.ID)
+			return nil, "", false
+		}
+		select {
+		case <-ctx.Done():
+			return nil, "", false
+		case <-ticker.C:
+		}
+	}
 }
 
 func (m *Manager) reapAll() {
@@ -306,4 +388,21 @@ func questionMessages() []core.Message {
 		Role:    "user",
 		Content: "你是一个爱提问的普通用户。用一句简短、有点意思的中文，向“AI”提一个问题。只输出问题本身，不要引号或解释。",
 	}}
+}
+
+func followUpQuestionMessages(history []core.Message) []core.Message {
+	next := make([]core.Message, 0, len(history)+1)
+	next = append(next, core.Message{
+		Role:    "system",
+		Content: "你是正在和一个 AI 连续聊天的普通用户。根据完整对话和对方刚才的回答，自然地追问一个简短、有意思的中文问题。不要重复已经问过的问题。只输出下一问本身，不要引号、前缀或解释。",
+	})
+	return append(next, history...)
+}
+
+func trimQuestion(question string) string {
+	question = strings.TrimSpace(question)
+	if runes := []rune(question); len(runes) > 500 {
+		return string(runes[:500])
+	}
+	return question
 }

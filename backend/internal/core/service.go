@@ -160,6 +160,18 @@ func (s *Service) Me(token string) (AuthResult, error) {
 }
 
 func (s *Service) CreateRequest(ctx context.Context, token string, model string, messages []Message, maxOutputChars int, allowAIAnswers ...bool) (*Request, error) {
+	allowAI := len(allowAIAnswers) == 0 || allowAIAnswers[0]
+	return s.createRequest(ctx, token, model, messages, maxOutputChars, allowAI, "")
+}
+
+func (s *Service) CreateTargetedRequest(ctx context.Context, token string, model string, messages []Message, maxOutputChars int, preferredResponderSessionID string) (*Request, error) {
+	if preferredResponderSessionID == "" {
+		return nil, ErrResponderUnavailable
+	}
+	return s.createRequest(ctx, token, model, messages, maxOutputChars, false, preferredResponderSessionID)
+}
+
+func (s *Service) createRequest(_ context.Context, token string, model string, messages []Message, maxOutputChars int, allowAI bool, preferredResponderSessionID string) (*Request, error) {
 	if err := validateInput(messages); err != nil {
 		return nil, err
 	}
@@ -174,6 +186,9 @@ func (s *Service) CreateRequest(ctx context.Context, token string, model string,
 	if !ok {
 		return nil, ErrUnauthorized
 	}
+	if preferredResponderSessionID != "" && KindOrHuman(session.Kind) != KindAIPersona {
+		return nil, ErrUnauthorized
+	}
 	frozenPoints := 0
 	if !session.Guest {
 		balance := s.balanceLocked(session.UserID)
@@ -184,25 +199,25 @@ func (s *Service) CreateRequest(ctx context.Context, token string, model string,
 	}
 
 	now := time.Now().UTC()
-	allowAI := len(allowAIAnswers) == 0 || allowAIAnswers[0]
 	req := &Request{
-		ID:                 newID("req"),
-		RequesterID:        session.UserID,
-		RequesterSessionID: session.ID,
-		RequesterGuest:     session.Guest,
-		RequesterKind:      KindOrHuman(session.Kind),
-		AllowAIAnswers:     allowAI,
-		BoardEligible:      session.Guest && session.Kind != KindAIPersona, // real guests only; personas never on the board
-		Messages:           append([]Message(nil), messages...),
-		Model:              model,
-		Status:             StatusQueued,
-		FrozenPoints:       frozenPoints,
-		OutputLimit:        maxOutputChars,
-		Reaction:           ReactionNone,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		FinishReason:       "",
-		QuestionCharged:    false,
+		ID:                          newID("req"),
+		RequesterID:                 session.UserID,
+		RequesterSessionID:          session.ID,
+		RequesterGuest:              session.Guest,
+		RequesterKind:               KindOrHuman(session.Kind),
+		AllowAIAnswers:              allowAI,
+		PreferredResponderSessionID: preferredResponderSessionID,
+		BoardEligible:               session.Guest && session.Kind != KindAIPersona, // real guests only; personas never on the board
+		Messages:                    append([]Message(nil), messages...),
+		Model:                       model,
+		Status:                      StatusQueued,
+		FrozenPoints:                frozenPoints,
+		OutputLimit:                 maxOutputChars,
+		Reaction:                    ReactionNone,
+		CreatedAt:                   now,
+		UpdatedAt:                   now,
+		FinishReason:                "",
+		QuestionCharged:             false,
 	}
 	s.requests[req.ID] = req
 	s.queue = append(s.queue, req.ID)
@@ -237,7 +252,11 @@ func (s *Service) UnregisterResponder(sessionID string) {
 		req := s.requests[requestID]
 		if req != nil && !isTerminal(req.Status) {
 			if len(s.fragments[requestID]) == 0 {
-				s.requeueLocked(req, now)
+				if req.PreferredResponderSessionID != "" {
+					s.abandonLocked(req, now)
+				} else {
+					s.requeueLocked(req, now)
+				}
 			} else {
 				s.completeLocked(req, FinishPartial, now)
 			}
@@ -252,10 +271,27 @@ func (s *Service) MarkResponderAvailable(sessionID string, acceptAIQuestions ...
 	if _, ok := s.responders[sessionID]; !ok {
 		return ErrResponderUnavailable
 	}
+	s.acceptAI[sessionID] = len(acceptAIQuestions) == 0 || acceptAIQuestions[0]
 	if s.activeByRes[sessionID] != "" {
 		return nil
 	}
-	s.acceptAI[sessionID] = len(acceptAIQuestions) == 0 || acceptAIQuestions[0]
+	if !contains(s.available, sessionID) {
+		s.available = append(s.available, sessionID)
+	}
+	s.tryAssignLocked(time.Now().UTC())
+	return nil
+}
+
+func (s *Service) ResumeResponder(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.responders[sessionID]; !ok {
+		return ErrResponderUnavailable
+	}
+	if s.activeByRes[sessionID] != "" {
+		return nil
+	}
 	if !contains(s.available, sessionID) {
 		s.available = append(s.available, sessionID)
 	}
@@ -268,7 +304,7 @@ func (s *Service) AcquireFallbackAssignment(requestID string) (string, AssignedR
 	defer s.mu.Unlock()
 
 	req := s.requests[requestID]
-	if req == nil || !req.AllowAIAnswers || req.Status != StatusQueued || isTerminal(req.Status) || len(s.fragments[requestID]) > 0 {
+	if req == nil || req.PreferredResponderSessionID != "" || !req.AllowAIAnswers || req.Status != StatusQueued || isTerminal(req.Status) || len(s.fragments[requestID]) > 0 {
 		return "", AssignedRequest{}, false
 	}
 
@@ -329,8 +365,13 @@ func (s *Service) SweepTimeouts(now time.Time, assignedTimeout time.Duration, st
 			continue
 		}
 		if req.Status == StatusAssigned && len(s.fragments[req.ID]) == 0 && assignedTimeout > 0 && now.Sub(req.UpdatedAt) >= assignedTimeout {
-			s.requeueLocked(req, now)
-			changed = append(changed, req.ID+":assigned_timeout_requeued")
+			if req.PreferredResponderSessionID != "" {
+				s.abandonLocked(req, now)
+				changed = append(changed, req.ID+":targeted_timeout_abandoned")
+			} else {
+				s.requeueLocked(req, now)
+				changed = append(changed, req.ID+":assigned_timeout_requeued")
+			}
 			continue
 		}
 		if req.Status == StatusStreaming && len(s.fragments[req.ID]) > 0 && streamingTimeout > 0 && now.Sub(req.UpdatedAt) >= streamingTimeout {
@@ -443,6 +484,10 @@ func (s *Service) Skip(sessionID string) error {
 	if len(s.fragments[requestID]) > 0 {
 		return ErrCannotSkipCommitted
 	}
+	if req.PreferredResponderSessionID != "" || req.RequesterKind == KindAIPersona {
+		s.abandonLocked(req, time.Now().UTC())
+		return nil
+	}
 	s.requeueLocked(req, time.Now().UTC())
 	s.tryAssignLocked(time.Now().UTC())
 	return nil
@@ -500,17 +545,7 @@ func (s *Service) CancelBeforeFirstFragment(requestID string) bool {
 		return false
 	}
 
-	s.removeQueuedRequestLocked(requestID)
-	if req.ResponderSessionID != "" {
-		delete(s.activeByRes, req.ResponderSessionID)
-	}
-	req.Status = StatusAbandoned
-	req.ResponderSessionID = ""
-	req.ResponderUserID = ""
-	req.ResponderGuest = false
-	req.FrozenPoints = 0
-	req.UpdatedAt = time.Now().UTC()
-	s.publishLocked(StreamEvent{Type: StreamEventDone, RequestID: requestID, FinishReason: FinishStop})
+	s.abandonLocked(req, time.Now().UTC())
 	return true
 }
 
@@ -791,6 +826,9 @@ func (s *Service) compatiblePairLocked() (int, int) {
 				continue
 			}
 			responderKind := KindOrHuman(session.Kind)
+			if req.PreferredResponderSessionID != "" && req.PreferredResponderSessionID != responderID {
+				continue
+			}
 			if responderKind == KindAIPersona && !req.AllowAIAnswers {
 				continue
 			}
@@ -818,6 +856,22 @@ func (s *Service) requeueLocked(req *Request, now time.Time) {
 	req.Status = StatusQueued
 	req.UpdatedAt = now
 	s.queue = append(s.queue, req.ID)
+}
+
+func (s *Service) abandonLocked(req *Request, now time.Time) {
+	s.removeQueuedRequestLocked(req.ID)
+	if req.ResponderSessionID != "" {
+		delete(s.activeByRes, req.ResponderSessionID)
+	}
+	req.Status = StatusAbandoned
+	req.ResponderSessionID = ""
+	req.ResponderUserID = ""
+	req.ResponderGuest = false
+	req.ResponderKind = ""
+	req.ResponderDisplay = ""
+	req.FrozenPoints = 0
+	req.UpdatedAt = now
+	s.publishLocked(StreamEvent{Type: StreamEventDone, RequestID: req.ID, FinishReason: FinishStop})
 }
 
 func (s *Service) completeLocked(req *Request, reason FinishReason, now time.Time) {

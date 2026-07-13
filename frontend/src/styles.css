@@ -1394,6 +1394,16 @@ textarea:focus {
   text-align: center;
 }
 
+.followup-wait {
+  min-width: 190px;
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--panel-strong));
+}
+
+.followup-wait .thinking-line {
+  min-height: 18px;
+}
+
 .answer-current {
   align-self: stretch;
   max-width: 100%;
@@ -1488,13 +1498,13 @@ textarea:focus {
   word-break: break-word;
 }
 
-.draft-inline:empty::before {
+.draft-inline[data-empty="true"]::before {
   color: var(--placeholder);
   content: attr(data-placeholder);
 }
 
-.draft-inline:empty::after {
-  content: "\00a0";
+.draft-inline > [data-caret-anchor] {
+  line-height: inherit;
 }
 
 .error {
