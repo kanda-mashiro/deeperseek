@@ -1,6 +1,6 @@
 # DeeperSeek Product Specification
 
-Status: Frozen v0.9
+Status: Frozen v0.10
 
 This document is the source of truth for product behavior after it is frozen.
 Implementation and tests must be derived from this document, not the other way
@@ -298,6 +298,17 @@ draft with Backspace/Delete. In both cases the editor must remain focused, the
 caret must remain visible immediately after the committed prefix, and the page
 must preserve its scroll position. The responder must be able to continue
 typing without clicking the editor again.
+
+Before the first character is entered, the empty editor may show hint text. The
+caret must render at the start of the editable line, before that hint, and the
+hint must disappear as soon as visible draft text exists.
+
+Committed fragments must be visibly distinct from both editable draft text and
+empty-editor hint text in light and dark themes. The committed state uses a cool
+teal-green text color with a restrained matching tint to communicate
+"synchronized and immutable"; editable text keeps the normal foreground color.
+The committed text color must maintain at least WCAG AA 4.5:1 contrast against
+the editor surface.
 
 ### 5.2 Fragment Commit Rule
 
@@ -635,6 +646,9 @@ Required:
   full transcript, and a visible thinking state between turns.
 - after a full draft is acknowledged, the empty draft keeps focus, a valid
   caret, and the current page scroll position so typing can continue directly.
+- before the first input, the empty-editor caret renders before its hint text.
+- committed text has a distinct, readable synchronized state in light and dark
+  themes.
 - deleting the entire uncommitted draft with Backspace keeps the same focus,
   caret, and scroll invariants.
 - both AI participation controls default to enabled and persist in the browser.

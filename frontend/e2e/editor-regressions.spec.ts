@@ -201,6 +201,7 @@ test("empty draft keeps a visible caret, focus, and scroll after commit and back
     const draft = responder.getByTestId("answer-draft");
     await draft.scrollIntoViewIfNeeded();
     await responder.getByTestId("answer-editor").click();
+    await expectCaretBeforeHint(responder);
     await responder.keyboard.insertText("## 标题\n\n- 第一项");
     const beforeCommitScroll = await captureScrollPosition(responder);
     await expect(responder.getByTestId("answer-committed")).toHaveText("## 标题\n\n- 第一项", { timeout: 5_000 });
@@ -224,6 +225,38 @@ test("empty draft keeps a visible caret, focus, and scroll after commit and back
       .toBe(`${committedPrefix}继续输入`);
   } finally {
     await responderContext.close().catch(() => undefined);
+    await requester.context().close().catch(() => undefined);
+  }
+});
+
+test("committed text has a distinct readable sync color in both themes", async ({ browser }) => {
+  const run = uniqueRun("committedColor");
+  const requester = await newUserPage(browser);
+  const responder = await newUserPage(browser);
+
+  try {
+    await responder.getByTestId("mode-answer").click();
+    await responder.getByTestId("answer-online").click();
+    await requester.getByTestId("request-prompt").fill(`committed color question ${run}`);
+    await requester.getByTestId("request-send").click();
+    await expect(responder.getByTestId("answer-incoming")).toContainText(`committed color question ${run}`);
+
+    await responder.getByTestId("answer-draft").fill("已经上传的片段");
+    await expect(responder.getByTestId("answer-committed")).toHaveText("已经上传的片段", { timeout: 5_000 });
+    await responder.waitForTimeout(1_000);
+
+    for (const theme of ["light", "dark"] as const) {
+      await responder.getByTestId(`theme-choice-${theme}`).click();
+      await expect(responder.locator("html")).toHaveAttribute("data-theme", theme);
+      await responder.waitForTimeout(350);
+      const style = await committedStyle(responder);
+      expect(style.locked).not.toBe(style.draft);
+      expect(style.locked).not.toBe(style.placeholder);
+      expect(style.background).not.toBe("rgba(0, 0, 0, 0)");
+      expect(style.contrast).toBeGreaterThanOrEqual(4.5);
+    }
+  } finally {
+    await responder.context().close().catch(() => undefined);
     await requester.context().close().catch(() => undefined);
   }
 });
@@ -252,6 +285,61 @@ async function expectStableCaret(page: Page, expectedScroll: { windowY: number; 
   const currentScroll = await captureScrollPosition(page);
   expect(Math.abs(currentScroll.windowY - expectedScroll.windowY)).toBeLessThanOrEqual(2);
   expect(Math.abs(currentScroll.editorY - expectedScroll.editorY)).toBeLessThanOrEqual(2);
+}
+
+async function expectCaretBeforeHint(page: Page) {
+  await expect(page.getByTestId("answer-draft")).toBeFocused();
+  await expect
+    .poll(() =>
+      page.getByTestId("answer-draft").evaluate((element) => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return Number.POSITIVE_INFINITY;
+        const caret = selection.getRangeAt(0).getBoundingClientRect();
+        return Math.abs(caret.left - element.getBoundingClientRect().left);
+      })
+    )
+    .toBeLessThanOrEqual(2);
+}
+
+async function committedStyle(page: Page) {
+  return page.evaluate(() => {
+    const committed = document.querySelector<HTMLElement>(".locked-inline");
+    const fragment = document.querySelector<HTMLElement>(".locked-frag");
+    const draft = document.querySelector<HTMLElement>(".draft-inline");
+    if (!committed || !fragment || !draft) throw new Error("answer editor is not ready");
+
+    const resolveColor = (value: string) => {
+      const probe = document.createElement("span");
+      probe.style.color = value;
+      document.body.appendChild(probe);
+      const resolved = getComputedStyle(probe).color;
+      probe.remove();
+      return resolved;
+    };
+    const channels = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (value: string) => {
+      const [red, green, blue] = channels(value).map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    };
+    const contrast = (a: string, b: string) => {
+      const [lighter, darker] = [luminance(a), luminance(b)].sort((left, right) => right - left);
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+
+    const rootStyle = getComputedStyle(document.documentElement);
+    const locked = getComputedStyle(committed).color;
+    const surface = resolveColor(rootStyle.getPropertyValue("--panel-strong"));
+    return {
+      locked,
+      draft: getComputedStyle(draft).color,
+      placeholder: getComputedStyle(draft, "::after").color,
+      background: getComputedStyle(fragment).backgroundColor,
+      contrast: contrast(locked, surface)
+    };
+  });
 }
 
 async function newUserPage(browser: Browser): Promise<Page> {
